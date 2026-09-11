@@ -27,7 +27,8 @@ contract DefaultMarketInput is MarketInput {
     config.flashLoanPremiumToProtocol = 0.0004e4;
 
     config.networkBaseTokenPriceInUsdProxyAggregator = 0xdE8d22d022261c9Fb4b5338DA8ceFb029175D0F5; //HYPE-USD pyth adapter
-    config.marketReferenceCurrencyPriceInUsdProxyAggregator = 0xdE8d22d022261c9Fb4b5338DA8ceFb029175D0F5; //HYPE-USD pyth adapter
+    config
+      .marketReferenceCurrencyPriceInUsdProxyAggregator = 0xdE8d22d022261c9Fb4b5338DA8ceFb029175D0F5; //HYPE-USD pyth adapter
     config.wrappedNativeToken = 0x5555555555555555555555555555555555555555;
 
     return (roles, config, flags, deployedContracts);

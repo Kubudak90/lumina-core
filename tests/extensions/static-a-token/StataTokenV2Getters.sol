@@ -15,8 +15,8 @@ contract StataTokenV2GettersTest is BaseTest {
   }
 
   function test_getters() public view {
-    assertEq(stataTokenV2.name(), 'Static Aave Local WETH v2');
-    assertEq(stataTokenV2.symbol(), 'stataLocWETHv2');
+    assertEq(stataTokenV2.name(), 'Static HyperLend Local WETH v2');
+    assertEq(stataTokenV2.symbol(), 'stathLocWETHv2');
 
     address referenceAsset = stataTokenV2.getReferenceAsset();
     assertEq(referenceAsset, aToken);

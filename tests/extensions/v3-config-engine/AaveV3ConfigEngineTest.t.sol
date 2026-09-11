@@ -26,6 +26,7 @@ import {MockAggregator} from '../../../src/contracts/mocks/oracle/CLAggregators/
 import {IPool, IPoolAddressesProvider} from '../../utils/ProtocolV3TestBase.sol';
 import {DataTypes} from '../../../src/contracts/protocol/libraries/types/DataTypes.sol';
 import {ProtocolV3TestBase, IDefaultInterestRateStrategyV2, ReserveConfig, ReserveTokens} from '../../utils/ProtocolV3TestBase.sol';
+import {IPoolConfigurator} from '../../../src/contracts/interfaces/IPoolConfigurator.sol';
 
 contract AaveV3ConfigEngineTest is TestnetProcedures, ProtocolV3TestBase {
   using stdStorage for StdStorage;
@@ -35,22 +36,6 @@ contract AaveV3ConfigEngineTest is TestnetProcedures, ProtocolV3TestBase {
     initTestEnvironment();
     configEngine = report.configEngine;
   }
-
-  event CollateralConfigurationChanged(
-    address indexed asset,
-    uint256 ltv,
-    uint256 liquidationThreshold,
-    uint256 liquidationBonus
-  );
-
-  event EModeCategoryAdded(
-    uint8 indexed categoryId,
-    uint256 ltv,
-    uint256 liquidationThreshold,
-    uint256 liquidationBonus,
-    address oracle,
-    string label
-  );
 
   function testListings() public {
     address asset = address(new TestnetERC20('1INCH', '1INCH', 18, address(this)));
@@ -295,14 +280,8 @@ contract AaveV3ConfigEngineTest is TestnetProcedures, ProtocolV3TestBase {
     _validateReserveConfig(expectedAssetConfig, allConfigsAfter);
   }
 
-  // TODO manage this after testFail* deprecation.
-  // This should not be necessary, but there seems there is no other way
-  // of validating that when all collateral params are KEEP_CURRENT, the config
-  // engine doesn't call the POOL_CONFIGURATOR.
-  // So the solution is expecting the event emitted on the POOL_CONFIGURATOR,
-  // and as this doesn't happen, expect the failure of the test
-  function testFailCollateralsUpdatesNoChange() public {
-    // this asset has been listed before
+  // KEEP_CURRENT on all collateral params must skip POOL_CONFIGURATOR.
+  function test_collateralsUpdatesNoChange_skipsConfigurator() public {
     address asset = tokenList.usdx;
     AaveV3MockCollateralUpdateNoChange payload = new AaveV3MockCollateralUpdateNoChange(
       asset,
@@ -312,22 +291,15 @@ contract AaveV3ConfigEngineTest is TestnetProcedures, ProtocolV3TestBase {
     vm.prank(roleList.marketOwner);
     contracts.aclManager.addPoolAdmin(address(payload));
 
-    ReserveConfig[] memory allConfigsBefore = createConfigurationSnapshot(
-      'preTestEngineCollateralNoChange',
-      IPool(address(contracts.poolProxy))
-    );
-
-    vm.expectEmit();
-    emit CollateralConfigurationChanged(
-      allConfigsBefore[0].underlying,
-      allConfigsBefore[0].ltv,
-      allConfigsBefore[0].liquidationThreshold,
-      allConfigsBefore[0].liquidationBonus
+    vm.expectCall(
+      address(contracts.poolConfiguratorProxy),
+      abi.encodeWithSelector(IPoolConfigurator.configureReserveAsCollateral.selector),
+      0
     );
     payload.execute();
   }
 
-  // Same as testFailCollateralsUpdatesNoChange, but this time should work, as we are not expecting any event emitted
+  // Same KEEP_CURRENT payload as above; asserts reserve config is unchanged.
   function testCollateralsUpdatesNoChange() public {
     // this asset has been listed before
     address asset = tokenList.usdx;
@@ -562,32 +534,24 @@ contract AaveV3ConfigEngineTest is TestnetProcedures, ProtocolV3TestBase {
     payload.execute();
   }
 
-  // TODO manage this after testFail* deprecation.
-  function testFailEModeCategoryUpdatesNoChange() public {
+  // KEEP_CURRENT on all eMode params must skip POOL_CONFIGURATOR.
+  function test_eModeCategoryUpdatesNoChange_skipsConfigurator() public {
     AaveV3MockEModeCategoryUpdateNoChange payload = new AaveV3MockEModeCategoryUpdateNoChange(
       configEngine
     );
 
-    DataTypes.EModeCategoryLegacy memory eModeCategoryDataBefore = contracts
-      .poolProxy
-      .getEModeCategoryData(1);
-
     vm.prank(roleList.marketOwner);
     contracts.aclManager.addPoolAdmin(address(payload));
 
-    vm.expectEmit(true, true, true, true);
-    emit EModeCategoryAdded(
-      1,
-      eModeCategoryDataBefore.ltv,
-      eModeCategoryDataBefore.liquidationThreshold,
-      eModeCategoryDataBefore.liquidationBonus,
-      address(0),
-      eModeCategoryDataBefore.label
+    vm.expectCall(
+      address(contracts.poolConfiguratorProxy),
+      abi.encodeWithSelector(IPoolConfigurator.setEModeCategory.selector),
+      0
     );
     payload.execute();
   }
 
-  // Same as testFailEModeCategoryUpdatesNoChange, but this time should work, as we are not expecting any event emitted
+  // Same KEEP_CURRENT payload as above; asserts eMode config is unchanged.
   function testEModeCategoryUpdatesNoChange() public {
     AaveV3MockEModeCategoryUpdateNoChange payload = new AaveV3MockEModeCategoryUpdateNoChange(
       configEngine

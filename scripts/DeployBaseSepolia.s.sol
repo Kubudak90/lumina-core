@@ -18,12 +18,12 @@ import {TestnetERC20} from '../src/contracts/mocks/testnet-helpers/TestnetERC20.
  *     --rpc-url https://sepolia.base.org --broadcast -vvv
  */
 contract DeployBaseSepolia is DeployAaveV3MarketBatchedBase {
-  string  constant MARKET_ID   = 'LightLend Base Sepolia';
+  string constant MARKET_ID = 'LightLend Base Sepolia';
   uint256 constant PROVIDER_ID = 84532;
-  uint8   constant ORACLE_DECIMALS = 8;
+  uint8 constant ORACLE_DECIMALS = 8;
 
-  uint128 constant FLASH_LOAN_PREMIUM_TOTAL       = 5;  // 5 bps
-  uint128 constant FLASH_LOAN_PREMIUM_TO_PROTOCOL  = 4;  // 4 bps
+  uint128 constant FLASH_LOAN_PREMIUM_TOTAL = 5; // 5 bps
+  uint128 constant FLASH_LOAN_PREMIUM_TO_PROTOCOL = 4; // 4 bps
 
   function _getMarketInput(
     address deployer
@@ -47,20 +47,20 @@ contract DeployBaseSepolia is DeployAaveV3MarketBatchedBase {
     //   5. Renounce DEFAULT_ADMIN_ROLE from deployer on ACLManager
     //   6. Verify no roles remain on deployer address
     // DO NOT operate in production with a single EOA holding all roles.
-    roles.marketOwner    = deployer;
+    roles.marketOwner = deployer;
     roles.emergencyAdmin = deployer;
-    roles.poolAdmin      = deployer;
+    roles.poolAdmin = deployer;
 
-    config.marketId   = MARKET_ID;
+    config.marketId = MARKET_ID;
     config.providerId = PROVIDER_ID;
     config.oracleDecimals = ORACLE_DECIMALS;
 
-    config.flashLoanPremiumTotal      = FLASH_LOAN_PREMIUM_TOTAL;
+    config.flashLoanPremiumTotal = FLASH_LOAN_PREMIUM_TOTAL;
     config.flashLoanPremiumToProtocol = FLASH_LOAN_PREMIUM_TO_PROTOCOL;
 
     // These will be deployed in the pre-deploy step
     // but we must set placeholder non-zero addresses for UiPoolDataProvider
-    config.networkBaseTokenPriceInUsdProxyAggregator        = address(1);
+    config.networkBaseTokenPriceInUsdProxyAggregator = address(1);
     config.marketReferenceCurrencyPriceInUsdProxyAggregator = address(1);
 
     // Skip wrapped native token gateway (we use WETH ERC20 directly)
