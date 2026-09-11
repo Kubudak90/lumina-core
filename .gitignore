@@ -1,6 +1,8 @@
 # build and cache
 cache/
 out/
+report/
+coverage/
 
 # general
 .env
@@ -25,6 +27,9 @@ node_modules
 broadcast/
 
 .DS_Store
+.claude/
+**/.claude/
+*.key
 
 # certora
 .certora*

@@ -8,6 +8,7 @@ on:
   pull_request:
   push:
     branches:
+      - master
       - main
 
 jobs:
@@ -38,7 +39,7 @@ jobs:
       - name: Install Foundry
         uses: foundry-rs/foundry-toolchain@8f1998e9878d786675189ef566a2e4bf24869773
         with:
-          version: nightly
+          version: v1.3.5
 
       - name: Install node dependencies
         run: bun install
