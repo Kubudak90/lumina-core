@@ -166,10 +166,10 @@ library ListingEngine {
         treasury: collector,
         incentivesController: rewardsController,
         useVirtualBalance: true,
-        aTokenName: string.concat('HyperLend ', context.networkName, ' ', basics[i].assetSymbol),
+        aTokenName: string.concat('Lumina ', context.networkName, ' ', basics[i].assetSymbol),
         aTokenSymbol: string.concat('h', context.networkAbbreviation, basics[i].assetSymbol),
         variableDebtTokenName: string.concat(
-          'HyperLend ',
+          'Lumina ',
           context.networkName,
           ' Variable Debt ',
           basics[i].assetSymbol
