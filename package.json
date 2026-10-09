@@ -1,5 +1,5 @@
 {
-  "name": "aave-v3-origin",
+  "name": "lumina-core",
   "version": "1.0.0",
   "scripts": {
     "lint": "prettier .",
@@ -7,15 +7,15 @@
   },
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/aave-dao/aave-v3-origin.git"
+    "url": "git+https://github.com/Kubudak90/lumina-core.git"
   },
   "keywords": [],
-  "author": "BGD Labs for Aave",
+  "author": "Lumina; derived from Aave DAO / BGD Labs (Aave v3.2) via HyperLend",
   "license": "BUSL1.1",
   "bugs": {
-    "url": "https://github.com/aave-dao/aave-v3-origin/issues"
+    "url": "https://github.com/Kubudak90/lumina-core/issues"
   },
-  "homepage": "https://github.com/aave-dao/aave-v3-origin#readme",
+  "homepage": "https://github.com/Kubudak90/lumina-core#readme",
   "type": "module",
   "devDependencies": {
     "prettier": "^2.8.3",

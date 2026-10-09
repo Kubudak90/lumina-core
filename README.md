@@ -1,6 +1,8 @@
-# HyperLend Core Contracts
+# Lumina Core (Aave v3.2 derivative)
 
-HyperLend is a [Friendly Fork](https://governance.aave.com/t/arfc-recognize-hyperlend-as-a-friendly-fork/) of [Aave v3](https://github.com/aave-dao/aave-v3-origin) (v3.2), deployed on HyperEVM chain.
+Lumina's EVM lending pool is a derivative of [Aave v3.2](https://github.com/aave-dao/aave-v3-origin), previously branded as a [HyperLend friendly fork](https://governance.aave.com/t/arfc-recognize-hyperlend-as-a-friendly-fork/). Contracts in this repo target **Base Sepolia (`84532`)** for development. Do not treat Lighter REST as this chain.
+
+See `NOTICE.md` and `LICENSE` (BUSL 1.1 / Additional Use Grant) before any public production deployment.
 
 ## Dependencies
 
@@ -45,13 +47,9 @@ npm install
 
 ## Security
 
-Aave v3.1 is an upgraded version of Aave v3, more precisely on top of the initial Aave v3 release and a follow-up 3.0.2 later update.
+Upstream Aave v3.x audit reports are listed below. They cover Aave's code, not Lumina-specific changes or this Base Sepolia deployment.
 
-The following are the security procedures historically applied to Aave v3.X versions.
-
-<br>
-
-**-> Aave v3**
+**Aave v3**
 
 - [ABDK](./audits/27-01-2022_ABDK_AaveV3.pdf)
 - [OpenZeppelin](./audits/01-11-2021_OpenZeppelin_AaveV3.pdf)
@@ -60,56 +58,10 @@ The following are the security procedures historically applied to Aave v3.X vers
 - [SigmaPrime](./audits/27-01-2022_SigmaPrime_AaveV3.pdf)
 - [Certora](./certora/Aave_V3_Formal_Verification_Report_Jan2022.pdf)
 
-<br>
+**Aave v3.0.1 / 3.0.2 / 3.1 / 3.2** — see `./audits/` and the [Aave v3 origin README](https://github.com/aave-dao/aave-v3-origin).
 
-**-> Aave v3.0.1 - December 2022**
-
-- [PeckShield](./audits/09-12-2022_PeckShield_AaveV3-0-1.pdf)
-- [SigmaPrime](./audits/23-12-2022_SigmaPrime_AaveV3-0-1.pdf)
-
-<br>
-
-**-> Aave v3.0.2 - April 2023**
-
-- [SigmaPrime](./audits/19-04-2023_SigmaPrime_AaveV3-0-2.pdf)
-- [Certora](./audits/03-2023_2023_Certora_AaveV3-0-2.pdf)
-
-<br>
-
-**-> Aave v3.1 - April 2024**
-
-- [Certora](./audits/30-04-2024_Certora_AaveV3.1.pdf)
-- [MixBytes](./audits/02-05-2024_MixBytes_AaveV3.1.pdf)
-- An internal review by [SterMi](https://twitter.com/stermi) on the virtual accounting feature was conducted on an initial phase of the codebase.
-- [Cantina competition report](./audits/02-06-2024-Cantina-contest-AaveV3.1.pdf)
-- Additionally, Certora properties have been improved over time since the Aave v3 release. More details [HERE](./certora/basic/README.md).
-
-<br>
-
-**-> Aave v3.2 - September 2024**
-
-#### Stable Rate and Liquid eModes
-
-- [Certora](./audits/2024-09-10_Certora_Aave-v3.2_Stable_Rate_Removal.pdf)
-- [Enigma Dark](./audits/2024-09-30_Enigma_Aave-v3.2.pdf)
-
-#### Liquid eModes
-
-- [Certora](./audits/2024-09-19_Certora_Aave-v3.2_Liquid_eModes.pdf)
-- [Oxorio](./audits/2024-09-12_Oxorio_Aav3-v3.2.pdf)
-- [Pashov](./audits/2024-09-15_Pashov_Aave-v3.2.pdf)
-
-<br>
-
-### Bug bounty
-
-This repository will be subjected to [this bug bounty](https://immunefi.com/bounty/aave/) once the Aave Governance upgrades the smart contracts in the applicable production instances.
-
-<br>
+This repository is not covered by the Aave Immunefi bounty until Lumina publishes its own program.
 
 ## License
 
-Copyright © 2024, Aave DAO, represented by its governance smart contracts.
-
-The [BUSL1.1](./LICENSE) license of this repository allows for any usage of the software, if respecting the Additional Use Grant limitations, forbidding any use case damaging anyhow the Aave DAO's interests.
-Interfaces and other components required for integrations are explicitly MIT licensed.
+See `LICENSE` (BUSL 1.1, Additional Use Grant) and `NOTICE.md`. Interfaces required for integrations remain MIT where marked.

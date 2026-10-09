@@ -20,7 +20,7 @@ contract DefaultMarketInput is MarketInput {
     roles.emergencyAdmin = deployer;
     roles.poolAdmin = deployer;
 
-    config.marketId = 'HyperLend Market';
+    config.marketId = 'Lumina Market';
     config.providerId = 1;
     config.oracleDecimals = 8;
     config.flashLoanPremiumTotal = 0.0005e4;
