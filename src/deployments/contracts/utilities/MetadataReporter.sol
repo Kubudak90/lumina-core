@@ -133,18 +133,14 @@ contract MetadataReporter is IMetadataReporter {
     vm.writeJson(output, string.concat('./reports/', timestamp, '-library-2-deployment.json'));
   }
 
-  function getTimestamp() public returns (string memory result) {
-    string[] memory command = new string[](3);
-
-    command[0] = 'bash';
-    command[1] = '-c';
-    command[2] = 'response="$(date +%s)"; cast abi-encode "response(string)" $response;';
-    bytes memory timestamp = vm.ffi(command);
-    (result) = abi.decode(timestamp, (string));
-
-    return result;
+  /// @dev Wall-clock seconds, read with a cheatcode (no shell, CORE-06).
+  function getTimestamp() public view returns (string memory result) {
+    return vm.toString(vm.unixTime() / 1000);
   }
 
+  /// @dev Shells out to git (vm.ffi), so every script that writes a market report through this
+  /// contract (e.g. scripts/misc/DeployAaveV3MarketBatchedBase.sol and its subclasses) must run
+  /// with `--ffi` or FOUNDRY_PROFILE=reports: ffi is off by default (CORE-06).
   function getGitModuleVersion() public returns (string memory commit, string memory branch) {
     string[] memory commitCommand = new string[](3);
     string[] memory branchCommand = new string[](3);

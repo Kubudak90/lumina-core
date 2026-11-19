@@ -10,16 +10,21 @@ import 'forge-std/Test.sol';
 contract DiffUtils is Test {
   using stdJson for string;
 
-  /// @dev Exact, lockfile-pinned version (package.json / yarn.lock). Never fetched at run time:
-  /// `npx --no-install` only runs the copy installed from the lockfile.
-  string internal constant AAVE_CLI = '@bgd-labs/aave-cli@1.0.0';
+  /// @dev The project-local CLI installed from the lockfile (package.json pins aave-cli 1.0.0).
+  /// Called directly, never through npx, so no global or cached copy and no download can run.
+  string internal constant AAVE_CLI = 'node_modules/.bin/aave-cli';
 
   /**
    * @dev Writes a human-readable markdown diff of two configuration reports. Informational only:
    * the tests' assertions do not depend on it. Opt-in (CORE-06): runs only with
    * AAVE_CLI_DIFFS=true and the `reports` profile (ffi = true); otherwise it is a no-op.
-   * Known limitation (2026-11-20): aave-cli 1.0.0 fails to load under Node 24 (CommonJS named
-   * export), and 1.1.0-1.4.8 need an RPC for the report's chain id, which 31337 does not have.
+   *
+   * UNSUPPORTED as of 2026-11-20: no Node / aave-cli combination is verified to produce these
+   * diffs for chain 31337. aave-cli 1.0.0 with js-utils 1.4.8 fails to load under
+   * Node 24 (CHAIN_ID_CLIENT_MAP import error); 1.1.0-1.4.8 need an RPC for the report's chain
+   * id, which 31337 does not have; strategy images are fetched from dash.onaave.com. If you
+   * enable it, a failing CLI fails the test loudly (exit code and stderr) instead of leaving a
+   * missing or stale markdown file.
    */
   function diffReports(string memory reportBefore, string memory reportAfter) internal {
     if (!vm.envOr('AAVE_CLI_DIFFS', false)) return;
@@ -29,15 +34,25 @@ contract DiffUtils is Test {
     string memory beforePath = string(abi.encodePacked('./reports/', reportBefore, '.json'));
     string memory afterPath = string(abi.encodePacked('./reports/', reportAfter, '.json'));
 
-    string[] memory inputs = new string[](8);
-    inputs[0] = 'npx';
-    inputs[1] = '--no-install';
-    inputs[2] = AAVE_CLI;
-    inputs[3] = 'diff-snapshots';
-    inputs[4] = beforePath;
-    inputs[5] = afterPath;
-    inputs[6] = '-o';
-    inputs[7] = outPath;
-    vm.ffi(inputs);
+    string[] memory inputs = new string[](6);
+    inputs[0] = AAVE_CLI;
+    inputs[1] = 'diff-snapshots';
+    inputs[2] = beforePath;
+    inputs[3] = afterPath;
+    inputs[4] = '-o';
+    inputs[5] = outPath;
+    Vm.FfiResult memory result = vm.tryFfi(inputs);
+    if (result.exitCode != 0) {
+      revert(
+        string(
+          abi.encodePacked(
+            'aave-cli diff-snapshots failed (exit ',
+            vm.toString(int256(result.exitCode)),
+            '; run `yarn install --frozen-lockfile` first): ',
+            string(result.stderr)
+          )
+        )
+      );
+    }
   }
 }

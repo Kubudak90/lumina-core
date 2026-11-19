@@ -31,7 +31,8 @@ abstract contract DeployAaveV3MarketBatchedBase is DeployUtils, MarketInput, Scr
     report = AaveV3BatchOrchestration.deployAaveV3(msg.sender, roles, config, flags, report);
     vm.stopBroadcast();
 
-    // Write market deployment JSON report at /reports
+    // Write market deployment JSON report at /reports. MetadataReporter reads git metadata via
+    // vm.ffi, so run every market deploy script with `--ffi` (ffi is off by default, CORE-06).
     IMetadataReporter metadataReporter = IMetadataReporter(
       _deployFromArtifacts('MetadataReporter.sol:MetadataReporter')
     );
