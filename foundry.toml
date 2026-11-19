@@ -16,6 +16,12 @@ fs_permissions = [
     { access = "read", path = "./out" },
     { access = "read", path = "./config" },
 ]
+# CORE-06: no shell access from tests by default. The optional human-readable report diffs
+# (tests/utils/DiffUtils.sol) need ffi: run them with
+#   FOUNDRY_PROFILE=reports AAVE_CLI_DIFFS=true forge test --match-path 'tests/extensions/v3-config-engine/*'
+ffi = false
+
+[profile.reports]
 ffi = true
 
 [fuzz]

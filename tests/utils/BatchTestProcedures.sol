@@ -279,15 +279,12 @@ contract BatchTestProcedures is Test, DeployUtils, FfiUtils, DefaultMarketInput 
     return deployReport;
   }
 
-  function detectFoundryLibrariesAndDelete() internal {
-    bool found = _librariesPathExists();
-
-    if (found) {
-      _deleteLibrariesPath();
-      console.log(
-        'TestnetProcedures: FOUNDRY_LIBRARIES was detected and removed. Please run again "make test" to deploy libraries with a fresh compilation.'
-      );
-      revert('Retry the "make test" command.');
+  /// @dev CORE-06: tests run without ffi. Pre-linked libraries (FOUNDRY_LIBRARIES, which forge
+  /// also loads from .env) would make a fresh test deployment link stale library addresses, so
+  /// fail with instructions instead of editing .env from inside a test through a shell.
+  function detectFoundryLibrariesAndDelete() internal view {
+    if (bytes(vm.envOr('FOUNDRY_LIBRARIES', string(''))).length != 0) {
+      revert('FOUNDRY_LIBRARIES is set (env or .env): remove it, then run the tests again.');
     }
   }
 
