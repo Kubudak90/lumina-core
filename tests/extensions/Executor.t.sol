@@ -27,6 +27,8 @@ contract ExecutorTest is Test {
   event EmergencyStatusChanged(bool enabled);
   event OwnershipTransferStarted(address indexed previousOwner, address indexed newOwner);
   event OwnershipTransferred(address indexed previousOwner, address indexed newOwner);
+  event CancelTransactionByHash(bytes32 indexed txHash);
+  event ObservedOwner(address owner);
 
   uint256 constant DELAY = 2 days;
   address constant ALICE = address(0xA11CE);
@@ -194,7 +196,7 @@ contract ExecutorTest is Test {
   }
 
   function test_queue_selfCall_onlyAllowlistedSelectors() public {
-    bytes[] memory bad = new bytes[](7);
+    bytes[] memory bad = new bytes[](13);
     bad[0] = '';
     bad[1] = hex'aabbcc';
     bad[2] = abi.encodeCall(Executor.acceptOwnership, ());
@@ -202,6 +204,15 @@ contract ExecutorTest is Test {
     bad[4] = abi.encodeCall(Executor.queueTransaction, (address(ex), ''));
     bad[5] = abi.encodeCall(Executor.execute, (address(ex), '', 0));
     bad[6] = abi.encodeCall(Executor.emergencyExecute, (address(ex)));
+    // an allowed selector with a 36-byte body that is not one of the three
+    bad[7] = abi.encodeCall(Executor.cancelTransactionByHash, (bytes32(0)));
+    // allowed selectors with the wrong length (trailing or missing bytes)
+    bad[8] = abi.encodePacked(abi.encodeCall(Executor.setDelay, (3 days)), hex'00');
+    bad[9] = abi.encodePacked(Executor.setEmergencyEnabled.selector, bytes31(0));
+    bad[10] = abi.encodePacked(Executor.transferOwnership.selector);
+    // dirty argument words
+    bad[11] = abi.encodePacked(Executor.transferOwnership.selector, uint256(1) << 160);
+    bad[12] = abi.encodePacked(Executor.setEmergencyEnabled.selector, uint256(2));
     for (uint256 i = 0; i < bad.length; i++) {
       vm.expectRevert(Executor.InvalidSelfCall.selector);
       ex.queueTransaction(address(ex), bad[i]);
@@ -210,6 +221,22 @@ contract ExecutorTest is Test {
     _queueSelf(abi.encodeCall(Executor.transferOwnership, (ALICE)));
     _queueSelf(abi.encodeCall(Executor.setEmergencyEnabled, (true)));
     assertEq(ex.queuedCount(), 3);
+  }
+
+  function test_queue_selfCall_argumentsValidatedAtQueueTime() public {
+    vm.expectRevert(abi.encodeWithSelector(Executor.InvalidDelay.selector, 1 days - 1));
+    ex.queueTransaction(address(ex), abi.encodeCall(Executor.setDelay, (1 days - 1)));
+    vm.expectRevert(abi.encodeWithSelector(Executor.InvalidDelay.selector, 30 days + 1));
+    ex.queueTransaction(address(ex), abi.encodeCall(Executor.setDelay, (30 days + 1)));
+    vm.expectRevert(Executor.InvalidOwner.selector);
+    ex.queueTransaction(address(ex), abi.encodeCall(Executor.transferOwnership, (address(ex))));
+    assertEq(ex.queuedCount(), 0);
+    // bounds are inclusive
+    _queueSelf(abi.encodeCall(Executor.setDelay, (1 days)));
+    _queueSelf(abi.encodeCall(Executor.setDelay, (30 days)));
+    _queueSelf(abi.encodeCall(Executor.setEmergencyEnabled, (false)));
+    _queueSelf(abi.encodeCall(Executor.transferOwnership, (address(0))));
+    assertEq(ex.queuedCount(), 4);
   }
 
   function test_queue_duplicateInSameBlock_reverts() public {
@@ -232,9 +259,93 @@ contract ExecutorTest is Test {
     assertEq(ex.queuedCount(), max);
   }
 
+  function test_cancelByHash_emitsAndRemoves() public {
+    (address[] memory targets, uint256 eta) = _queueNoops(3);
+    bytes32 txHash = ex.getTransactionHash(targets[1], '', eta);
+    vm.expectEmit(true, true, true, true, address(ex));
+    emit CancelTransactionByHash(txHash);
+    ex.cancelTransactionByHash(txHash);
+    assertFalse(ex.isQueued(txHash));
+    assertEq(ex.queuedCount(), 2);
+    vm.warp(eta);
+    vm.expectRevert(abi.encodeWithSelector(Executor.NotQueued.selector, txHash));
+    ex.execute(targets[1], '', eta);
+    vm.expectRevert(abi.encodeWithSelector(Executor.NotQueued.selector, txHash));
+    ex.cancelTransactionByHash(txHash);
+    bytes32 other = ex.getTransactionHash(targets[0], '', eta);
+    vm.prank(ALICE);
+    vm.expectRevert(Executor.NotOwner.selector);
+    ex.cancelTransactionByHash(other);
+    assertTrue(ex.isQueued(other));
+  }
+
+  /// A full queue of expired entries is freed knowing only the hashes from `queuedTransactionAt`.
+  function test_cancelByHash_freesFullQueueOfExpiredEntries() public {
+    uint256 max = ex.MAX_QUEUED();
+    (address[] memory targets, uint256 eta) = _queueNoops(max);
+    vm.warp(eta + ex.GRACE_PERIOD() + 1);
+    vm.expectRevert(abi.encodeWithSelector(Executor.Expired.selector, eta));
+    ex.execute(targets[0], '', eta);
+    address fresh = address(new NoopPayload());
+    vm.expectRevert(Executor.QueueFull.selector);
+    ex.queueTransaction(fresh, '');
+    while (ex.queuedCount() > 0) {
+      (bytes32 txHash, ) = ex.queuedTransactionAt(0);
+      ex.cancelTransactionByHash(txHash);
+    }
+    _queue(fresh);
+    assertEq(ex.queuedCount(), 1);
+  }
+
   // ===========================================================================================
-  // codehash re-check
+  // codehash re-check and EIP-7702 delegation designators
   // ===========================================================================================
+
+  function _designator(address delegate) internal pure returns (bytes memory) {
+    return abi.encodePacked(hex'ef0100', delegate);
+  }
+
+  function test_queue_rejectsDelegationDesignator() public {
+    address eoa = makeAddr('delegated-eoa');
+    // delegate to an address with no code yet: code could be deployed there after the delay
+    vm.etch(eoa, _designator(address(0xDE1E6A7E)));
+    assertEq(eoa.code.length, 23);
+    vm.expectRevert(abi.encodeWithSelector(Executor.DelegatedTarget.selector, eoa));
+    ex.queueTransaction(eoa, '');
+    // also when delegating to an existing contract
+    vm.etch(eoa, _designator(address(new NoopPayload())));
+    vm.expectRevert(abi.encodeWithSelector(Executor.DelegatedTarget.selector, eoa));
+    ex.queueTransaction(eoa, '');
+    assertEq(ex.queuedCount(), 0);
+  }
+
+  function test_emergency_rejectsDelegationDesignator() public {
+    _enableEmergency();
+    address eoa = makeAddr('delegated-eoa');
+    vm.etch(eoa, _designator(address(new NoopPayload())));
+    vm.expectRevert(abi.encodeWithSelector(Executor.DelegatedTarget.selector, eoa));
+    ex.emergencyExecute(eoa);
+  }
+
+  /// A queued contract target that later becomes a delegated account cannot be executed.
+  function test_execute_rejectsTargetThatBecameDelegationDesignator() public {
+    NoopPayload p = new NoopPayload();
+    uint256 eta = _queue(address(p));
+    vm.etch(address(p), _designator(address(new CounterPayload())));
+    vm.warp(eta);
+    vm.expectRevert(abi.encodeWithSelector(Executor.DelegatedTarget.selector, address(p)));
+    ex.execute(address(p), '', eta);
+  }
+
+  /// The check is on the 0xef0100 prefix, not on the code size alone. (Other 0xef01 versions cannot
+  /// be etched: revm rejects them as unsupported EIP-7702 bytecode.)
+  function test_queue_accepts23ByteNonDesignatorCode() public {
+    address c = makeAddr('23-byte-contract');
+    vm.etch(c, abi.encodePacked(hex'00', bytes22(0)));
+    assertEq(c.code.length, 23);
+    ex.queueTransaction(c, '');
+    assertEq(ex.queuedCount(), 1);
+  }
 
   function test_execute_revertsWhenTargetCodeChanged() public {
     NoopPayload p = new NoopPayload();
@@ -248,6 +359,7 @@ contract ExecutorTest is Test {
     ex.execute(address(p), '', eta);
   }
 
+  /// Execute-time half of the review PoC `test_execute_codelessTarget_silentSuccess`.
   function test_execute_revertsWhenTargetCodeRemoved() public {
     NoopPayload p = new NoopPayload();
     uint256 eta = _queue(address(p));
@@ -375,12 +487,26 @@ contract ExecutorTest is Test {
     ex.execute(p, '', eta);
   }
 
+  /// Allowed self-calls are validated at queue time, so force the inner call to fail with a mock.
   function test_selfCall_bubblesRevert() public {
-    bytes memory data = abi.encodeCall(Executor.setDelay, (31 days));
+    bytes memory data = abi.encodeCall(Executor.setDelay, (3 days));
     uint256 eta = _queueSelf(data);
     vm.warp(eta);
-    vm.expectRevert(abi.encodeWithSelector(Executor.InvalidDelay.selector, 31 days));
+    bytes memory reason = abi.encodeWithSelector(Executor.InvalidDelay.selector, 12345);
+    vm.mockCallRevert(address(ex), data, reason);
+    vm.expectRevert(reason);
     ex.execute(address(ex), data, eta);
+    assertEq(ex.delay(), DELAY);
+  }
+
+  /// The self-governance functions keep their own checks (exercised as the Executor itself).
+  function test_selfGovernance_functionLevelChecks() public {
+    vm.startPrank(address(ex));
+    vm.expectRevert(abi.encodeWithSelector(Executor.InvalidDelay.selector, 31 days));
+    ex.setDelay(31 days);
+    vm.expectRevert(Executor.InvalidOwner.selector);
+    ex.transferOwnership(address(ex));
+    vm.stopPrank();
   }
 
   // ===========================================================================================
@@ -459,10 +585,8 @@ contract ExecutorTest is Test {
 
   function test_ownership_selfAsOwner_rejected() public {
     bytes memory data = abi.encodeCall(Executor.transferOwnership, (address(ex)));
-    uint256 eta = _queueSelf(data);
-    vm.warp(eta);
     vm.expectRevert(Executor.InvalidOwner.selector);
-    ex.execute(address(ex), data, eta);
+    ex.queueTransaction(address(ex), data);
   }
 
   function test_emergency_enabledOnlyThroughQueue_thenOwnerCanDisable() public {
@@ -602,12 +726,15 @@ contract ExecutorTest is Test {
     assertTrue(ex.isQueued(ex.getTransactionHash(other, '', otherEta)));
   }
 
-  /// The guard compares the state before and after the call: a change that is fully undone within
-  /// the call leaves no trace and passes.
+  /// The guard compares the state before and after the call: a change that is live during the
+  /// call (the payload reads owner() == 0xdead back through the Executor) but undone before it
+  /// returns passes. Payload review must reject payloads that call back into the Executor.
   function test_guard_restoredWithinCall_passes() public {
     address p = address(new TransientRestorePayload());
     uint256 eta = _queue(p);
     vm.warp(eta);
+    vm.expectEmit(true, true, true, true, address(ex));
+    emit ObservedOwner(address(0xdead));
     ex.execute(p, '', eta);
     assertEq(ex.owner(), address(this));
   }

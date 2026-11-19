@@ -10,10 +10,27 @@ pragma solidity ^0.8.20;
  *  - Payload: `target` is a contract whose `execute()` is DELEGATECALLed in the Executor's context
  *    (Aave config-engine payload model). `data` must be empty. The queue entry commits to
  *    `(target, extcodehash(target), eta)`; execution reverts if the target's code changed.
+ *    EIP-7702 delegation designators (`0xef0100 || address`) are rejected as targets on every
+ *    path: their codehash pins only the pointer, not the code a DELEGATECALL would run.
  *  - Self-governance call: `target == address(this)` and `data` is a call to `setDelay`,
- *    `transferOwnership` or `setEmergencyEnabled`. It is executed with a plain CALL from the
- *    Executor to itself, so no foreign code runs in the Executor's storage context. These three
- *    functions can only be called by the Executor itself, i.e. only through the queue.
+ *    `transferOwnership` or `setEmergencyEnabled` with exactly one ABI word, validated at queue
+ *    time. It is executed with a plain CALL from the Executor to itself, so no foreign code runs in
+ *    the Executor's storage context. These three functions can only be called by the Executor
+ *    itself, i.e. only through the queue.
+ *
+ * Payload review (off-chain, during the delay) remains the trust boundary. The codehash pins only
+ * the target's own bytecode, so review must reject:
+ *  - targets that are proxies or otherwise DELEGATECALL/CALL into code that can change behind an
+ *    unchanged codehash (upgradeable implementations, registries, metamorphic contracts);
+ *  - payloads that call back into the Executor (`execute`, `emergencyExecute`, queue functions).
+ *    The guard below stops persistent governance-state changes; it does not stop a reviewed payload
+ *    from using the Executor's authority, which is what a payload is for;
+ *  - payloads that SELFDESTRUCT (on chains before EIP-6780 this would delete the Executor).
+ * The emergency path, once enabled through the queue, runs any payload without delay; keep it
+ * disabled unless an emergency procedure requires it. A payload can emit arbitrary events under the
+ * Executor's address, so indexers and bots must verify queue state with `isQueued` /
+ * `queuedTransactionAt` rather than trust events alone. `ExecuteTransaction` and
+ * `EmergencyExecuted` are emitted after the guard check.
  *
  * Storage-integrity guard: a payload runs with full write access to this contract's storage. Every
  * DELEGATECALL (`execute` of a payload and `emergencyExecute`) is wrapped by a guard that hashes
@@ -68,6 +85,7 @@ contract Executor {
     uint256 eta
   );
   event CancelTransaction(bytes32 indexed txHash, address indexed target, bytes data, uint256 eta);
+  event CancelTransactionByHash(bytes32 indexed txHash);
   event ExecuteTransaction(
     bytes32 indexed txHash,
     address indexed target,
@@ -87,6 +105,7 @@ contract Executor {
   error InvalidOwner();
   error InvalidDelay(uint256 delay);
   error InvalidTarget(address target);
+  error DelegatedTarget(address target);
   error InvalidSelfCall();
   error PayloadDataNotEmpty();
   error AlreadyQueued(bytes32 txHash);
@@ -198,12 +217,21 @@ contract Executor {
     emit CancelTransaction(txHash, target, data, eta);
   }
 
+  /// @notice Cancel by hash only (e.g. an expired entry read from `queuedTransactionAt`).
+  function cancelTransactionByHash(bytes32 txHash) external onlyOwner {
+    uint256 index = _indexOf(txHash);
+    if (index == NOT_FOUND) revert NotQueued(txHash);
+    _remove(index);
+    emit CancelTransactionByHash(txHash);
+  }
+
   function execute(address target, bytes calldata data, uint256 eta) external onlyOwner {
     bytes32 txHash = getTransactionHash(target, data, eta);
     uint256 index = _indexOf(txHash);
     if (index == NOT_FOUND) revert NotQueued(txHash);
     if (block.timestamp < eta) revert NotReady(eta);
     if (block.timestamp > eta + GRACE_PERIOD) revert Expired(eta);
+    if (target != address(this) && _isDelegationDesignator(target)) revert DelegatedTarget(target);
     bytes32 codehash = _queue[index].codehash;
     if (target.codehash != codehash) revert CodehashMismatch(codehash, target.codehash);
 
@@ -229,6 +257,7 @@ contract Executor {
   function emergencyExecute(address target) external onlyOwner {
     if (!_emergencyEnabled) revert EmergencyDisabled();
     if (target == address(this) || target.code.length == 0) revert InvalidTarget(target);
+    if (_isDelegationDesignator(target)) revert DelegatedTarget(target);
     bytes32 codehash = target.codehash;
     _guardedDelegatecall(target);
     emit EmergencyExecuted(target, codehash);
@@ -285,16 +314,34 @@ contract Executor {
 
   function _validateAction(address target, bytes calldata data) private view {
     if (target == address(this)) {
-      if (data.length < 4) revert InvalidSelfCall();
+      // every allowed function takes exactly one static ABI word
+      if (data.length != 36) revert InvalidSelfCall();
       bytes4 selector = bytes4(data[:4]);
-      if (
-        selector != this.setDelay.selector &&
-        selector != this.transferOwnership.selector &&
-        selector != this.setEmergencyEnabled.selector
-      ) revert InvalidSelfCall();
+      uint256 arg = uint256(bytes32(data[4:36]));
+      if (selector == this.setDelay.selector) {
+        _validateDelay(arg);
+      } else if (selector == this.transferOwnership.selector) {
+        if (arg >> 160 != 0) revert InvalidSelfCall();
+        if (address(uint160(arg)) == address(this)) revert InvalidOwner();
+      } else if (selector == this.setEmergencyEnabled.selector) {
+        if (arg > 1) revert InvalidSelfCall();
+      } else {
+        revert InvalidSelfCall();
+      }
     } else {
       if (data.length != 0) revert PayloadDataNotEmpty();
       if (target.code.length == 0) revert InvalidTarget(target);
+      if (_isDelegationDesignator(target)) revert DelegatedTarget(target);
+    }
+  }
+
+  /// @dev EIP-7702: a delegated EOA's code is the 23-byte designator `0xef0100 || address`.
+  function _isDelegationDesignator(address account) private view returns (bool isDesignator) {
+    assembly ('memory-safe') {
+      if eq(extcodesize(account), 23) {
+        extcodecopy(account, 0, 0, 3) // scratch space
+        isDesignator := eq(shr(232, mload(0)), 0xef0100)
+      }
     }
   }
 

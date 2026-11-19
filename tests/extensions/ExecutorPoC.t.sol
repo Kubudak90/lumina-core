@@ -31,6 +31,8 @@ contract ExecutorPoC is Test {
 
   /// CORE-03: a queued payload zeroed the delay, re-enabled the emergency path and replaced the owner.
   function test_disableEmergency_isNotPermanent_and_delayCanBeZeroed() public {
+    // enabled through the queue, then switched off by the owner
+    _enableEmergency();
     ex.disableEmergency();
     assertFalse(ex.emergencyEnabled());
 
@@ -46,6 +48,13 @@ contract ExecutorPoC is Test {
     vm.prank(address(0xA11CE));
     vm.expectRevert(Executor.NotOwner.selector);
     ex.emergencyExecute(noop);
+
+    // no non-queued way back on: the owner cannot re-enable it directly, so it stays disabled
+    vm.expectRevert(Executor.NotSelf.selector);
+    ex.setEmergencyEnabled(true);
+    vm.expectRevert(Executor.EmergencyDisabled.selector);
+    ex.emergencyExecute(noop);
+    assertFalse(ex.emergencyEnabled());
   }
 
   /// CORE-03: a payload with a state variable clobbered `_owner` (slot 0).
@@ -74,10 +83,23 @@ contract ExecutorPoC is Test {
     assertEq(ex.queuedCount(), 0);
   }
 
-  /// CORE-03: executing a codeless target silently succeeded.
-  function test_execute_codelessTarget_silentSuccess() public {
+  /// CORE-03 (review PoC `test_execute_codelessTarget_silentSuccess`): executing a codeless target
+  /// silently succeeded. A codeless target is now rejected at queue time, and a target whose code is
+  /// removed after queueing fails the execute-time codehash check (also covered by
+  /// ExecutorTest.test_execute_revertsWhenTargetCodeRemoved).
+  function test_codelessTarget_rejectedAtQueueAndExecute() public {
     vm.expectRevert(abi.encodeWithSelector(Executor.InvalidTarget.selector, address(0xC0FFEE)));
     ex.queueTransaction(address(0xC0FFEE), '');
+
+    NoopPayload p = new NoopPayload();
+    (, uint256 eta) = ex.queueTransaction(address(p), '');
+    bytes32 queued = address(p).codehash;
+    vm.etch(address(p), '');
+    vm.warp(eta);
+    vm.expectRevert(
+      abi.encodeWithSelector(Executor.CodehashMismatch.selector, queued, address(p).codehash)
+    );
+    ex.execute(address(p), '', eta);
   }
 
   /// CORE-07: the revert reason came back as a 100-byte ABI blob instead of '99'.

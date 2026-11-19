@@ -187,13 +187,21 @@ contract HijackOwnerPayload {
   }
 }
 
-/// @dev Changes the owner slot and restores it within the call: no net change.
+/// @dev Changes the owner slot, proves the change is live by reading it back through an external
+/// call to the Executor (so the optimizer cannot drop the write), then restores it: no net change.
 contract TransientRestorePayload {
+  event ObservedOwner(address owner);
+
   function execute() external {
+    address original = Executor(address(this)).owner();
     assembly {
-      let old := sload(0)
       sstore(0, 0xdead)
-      sstore(0, old)
+    }
+    address observed = Executor(address(this)).owner();
+    require(observed == address(0xdead), 'intermediate write not visible');
+    emit ObservedOwner(observed);
+    assembly {
+      sstore(0, original)
     }
   }
 }
