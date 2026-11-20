@@ -10,7 +10,7 @@ interface IMetadataReporter {
 
   function writeJsonReportLibraryBatch2(LibrariesReport memory libraries) external;
 
-  function getTimestamp() external returns (string memory result);
+  function getTimestamp() external view returns (string memory result);
 
   function getGitModuleVersion() external returns (string memory commit, string memory branch);
 }
