@@ -119,7 +119,26 @@ contract DeployLighterLibrariesBatch2 is LighterManifest {
       sent = true;
     }
 
-    _writeContract('flashLoanLogic', r.flashLoanLogic, 'FlashLoanLogic');
+    // FlashLoanLogic calls BorrowLogic as an external library: record the link (manifest
+    // `libraries`, checked against the on-chain runtime by verify-deployment).
+    require(
+      _containsAddress(r.flashLoanLogic.code, borrowLogic),
+      'FlashLoanLogic runtime does not link BorrowLogic'
+    );
+    _write(
+      '.contracts.flashLoanLogic',
+      _contractJsonWithLibraries(
+        r.flashLoanLogic,
+        'FlashLoanLogic',
+        string.concat(
+          '{',
+          _q('src/contracts/protocol/libraries/logic/BorrowLogic.sol:BorrowLogic'),
+          ':',
+          _jAddress(borrowLogic),
+          '}'
+        )
+      )
+    );
     _writeContract('liquidationLogic', r.liquidationLogic, 'LiquidationLogic');
     _writeContract('poolLogic', r.poolLogic, 'PoolLogic');
     _writeContract('supplyLogic', r.supplyLogic, 'SupplyLogic');

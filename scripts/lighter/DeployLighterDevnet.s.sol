@@ -205,8 +205,7 @@ interface IImmutableAdminProxy {
  *   LUMINA_MANIFEST=reports/lighter/<file>.json FOUNDRY_LIBRARIES=... forge script \
  *     scripts/lighter/DeployLighterDevnet.s.sol:DeployLighterDevnet --sig '<phase>()' \
  *     --rpc-url lighter --broadcast --slow --ffi --sender <deployer> (--unlocked | --account <ks>)
- * handOver() also needs LUMINA_DEPLOY_CHECKPOINT, LUMINA_SAFE_SINGLETON and
- * LUMINA_SAFE_FALLBACK_HANDLER (the Safe deployment's singleton and fallback handler).
+ * handOver() also needs LUMINA_DEPLOY_CHECKPOINT (the deploy checkpoint with the Safe probe).
  */
 contract DeployLighterDevnet is LighterManifest, LighterMarketInput {
   address internal constant DEAD = 0x000000000000000000000000000000000000dEaD;
@@ -737,9 +736,10 @@ contract DeployLighterDevnet is LighterManifest, LighterMarketInput {
   }
 
   /**
-   * @dev The Safe behind every role: code, the manifest owners and threshold 2, the expected
-   * singleton and fallback handler (LUMINA_SAFE_SINGLETON / LUMINA_SAFE_FALLBACK_HANDLER, the
-   * values the Safe deployment used), no module, no transaction guard, the manifest version.
+   * @dev The Safe behind every role: code, the manifest owners and threshold 2, the manifest's
+   * `safe.singleton` (slot 0) and `safe.fallbackHandler` (the loader pins both to the canonical
+   * v1.3.0 SafeL2 and CompatibilityFallbackHandler), no module, no transaction guard, the
+   * manifest version.
    */
   function _verifySafe() internal view {
     address safe = _in.safe;
@@ -758,11 +758,14 @@ contract DeployLighterDevnet is LighterManifest, LighterMarketInput {
       'Safe: threshold is not 2'
     );
     address singleton = address(uint160(uint256(vm.load(safe, bytes32(0)))));
-    require(singleton == vm.envAddress('LUMINA_SAFE_SINGLETON'), 'Safe: unexpected singleton');
+    require(
+      singleton == _requireAddress('.safe.singleton'),
+      'Safe: singleton is not safe.singleton'
+    );
     address handler = address(uint160(uint256(vm.load(safe, SAFE_FALLBACK_HANDLER_SLOT))));
     require(
-      handler == vm.envAddress('LUMINA_SAFE_FALLBACK_HANDLER'),
-      'Safe: unexpected fallback handler'
+      handler == _requireAddress('.safe.fallbackHandler'),
+      'Safe: fallback handler is not safe.fallbackHandler'
     );
     require(vm.load(safe, SAFE_GUARD_SLOT) == bytes32(0), 'Safe: a transaction guard is set');
     (address[] memory modules, ) = ISafeView(safe).getModulesPaginated(SAFE_SENTINEL_MODULES, 10);
