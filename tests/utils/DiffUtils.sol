@@ -13,6 +13,7 @@ contract DiffUtils is Test {
   /// @dev The project-local CLI installed from the lockfile (package.json pins aave-cli 1.0.0).
   /// Called directly, never through npx, so no global or cached copy and no download can run.
   string internal constant AAVE_CLI = 'node_modules/.bin/aave-cli';
+  string internal constant AAVE_CLI_VERSION = '1.0.0';
 
   /**
    * @dev Writes a human-readable markdown diff of two configuration reports. Informational only:
@@ -34,6 +35,8 @@ contract DiffUtils is Test {
     string memory beforePath = string(abi.encodePacked('./reports/', reportBefore, '.json'));
     string memory afterPath = string(abi.encodePacked('./reports/', reportAfter, '.json'));
 
+    _requirePinnedCli();
+
     string[] memory inputs = new string[](6);
     inputs[0] = AAVE_CLI;
     inputs[1] = 'diff-snapshots';
@@ -50,6 +53,33 @@ contract DiffUtils is Test {
             vm.toString(int256(result.exitCode)),
             '; run `yarn install --frozen-lockfile` first): ',
             string(result.stderr)
+          )
+        )
+      );
+    }
+  }
+
+  /// @dev Refuses a stale local install (e.g. one made under an older version range): the
+  /// installed package must be exactly AAVE_CLI_VERSION.
+  function _requirePinnedCli() private {
+    string[] memory versionCmd = new string[](3);
+    versionCmd[0] = 'node';
+    versionCmd[1] = '-p';
+    versionCmd[2] = "require('./node_modules/@bgd-labs/aave-cli/package.json').version";
+    Vm.FfiResult memory version = vm.tryFfi(versionCmd);
+    if (
+      version.exitCode != 0 ||
+      keccak256(version.stdout) != keccak256(bytes(AAVE_CLI_VERSION))
+    ) {
+      revert(
+        string(
+          abi.encodePacked(
+            'aave-cli ',
+            AAVE_CLI_VERSION,
+            ' is not installed locally (found: ',
+            string(version.stdout),
+            string(version.stderr),
+            '); run `yarn install --frozen-lockfile` first'
           )
         )
       );
