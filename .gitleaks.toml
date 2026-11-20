@@ -42,8 +42,9 @@ description = "Upstream Aave: Solidity identifiers and the ERC-7201 storage slot
 targetRules = ["generic-api-key"]
 condition = "AND"
 paths = [
-  '''^src/periphery/contracts/static-a-token/ERC4626StataTokenUpgradeable\.sol$''',
-  '''^src/periphery/contracts/static-a-token/interfaces/IStataTokenV2\.sol$''',
+  # periphery/contracts/... before the upstream move, contracts/extensions/... in upstream merges
+  '''^src/(periphery/contracts|contracts/extensions)/static-a-token/ERC4626StataTokenUpgradeable\.sol$''',
+  '''^src/(periphery/contracts|contracts/extensions)/static-a-token/interfaces/IStataTokenV2\.sol$''',
   '''^tests/core/ATokenRepay\.t\.sol$''',
 ]
 regexTarget = "secret"
