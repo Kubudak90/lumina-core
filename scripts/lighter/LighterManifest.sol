@@ -2,6 +2,7 @@
 pragma solidity ^0.8.0;
 
 import {Script} from 'forge-std/Script.sol';
+import {VmSafe} from 'forge-std/Vm.sol';
 import {console} from 'forge-std/console.sol';
 
 /**
@@ -322,26 +323,39 @@ abstract contract LighterManifest is Script {
   }
 
   // ------------------------------------------------------------------------------------------
-  // Receipts (needs --ffi: `cast receipt --json`, fixed argv, no shell)
+  // Logs on Forge's active fork (the chain this run broadcasts to)
   // ------------------------------------------------------------------------------------------
 
-  /// @dev The RPC URL from the env var the manifest names (`rpcEnv`), as the deploy was started.
-  function _rpcUrl() internal view returns (string memory) {
-    return vm.envString(vm.parseJsonString(_json, '.rpcEnv'));
-  }
-
-  /// @dev The mined receipt of `txHash` as JSON text (reverts if the node does not know it).
-  function _receipt(bytes32 txHash) internal returns (string memory) {
-    string[] memory cmd = new string[](6);
-    cmd[0] = 'cast';
-    cmd[1] = 'receipt';
-    cmd[2] = '--rpc-url';
-    cmd[3] = _rpcUrl();
-    cmd[4] = vm.toString(txHash);
-    cmd[5] = '--json';
-    bytes memory out = vm.ffi(cmd);
-    require(out.length > 2 && out[0] == '{', string.concat('no receipt for ', vm.toString(txHash)));
-    return string(out);
+  /**
+   * @dev The log `emitter` emitted with `topic0` / `topic1` in transaction `txHash`, read with
+   * `eth_getLogs` on the active fork (never another RPC). Its block must be canonical there: the
+   * keccak256 of the fork's raw header at that height is the log's block hash. Only a successful
+   * transaction leaves logs. Reverts when no such log exists.
+   * @return blockNumber of the transaction
+   */
+  function _requireLog(
+    address emitter,
+    bytes32 topic0,
+    bytes32 topic1,
+    bytes32 txHash,
+    uint256 fromBlock
+  ) internal returns (uint256 blockNumber) {
+    bytes32[] memory topics = new bytes32[](topic1 == bytes32(0) ? 1 : 2);
+    topics[0] = topic0;
+    if (topic1 != bytes32(0)) topics[1] = topic1;
+    VmSafe.EthGetLogs[] memory logs = vm.eth_getLogs(fromBlock, block.number, emitter, topics);
+    for (uint256 i = 0; i < logs.length; i++) {
+      if (logs[i].transactionHash != txHash || logs[i].removed) continue;
+      require(
+        keccak256(ILighterRawHeader(address(vm)).getRawBlockHeader(logs[i].blockNumber)) ==
+          logs[i].blockHash,
+        string.concat('log block is not canonical on this fork: ', vm.toString(txHash))
+      );
+      return logs[i].blockNumber;
+    }
+    revert(
+      string.concat('no log of ', vm.toString(emitter), ' in transaction ', vm.toString(txHash))
+    );
   }
 
   /// @dev True when the 20 bytes of `a` occur in `code` (a linked library address).
@@ -362,4 +376,10 @@ abstract contract LighterManifest is Script {
       }
     }
   }
+}
+
+/// @dev Foundry cheatcode (not yet in this forge-std): the RLP block header at `blockNumber` on the
+/// active fork; its keccak256 is the block hash.
+interface ILighterRawHeader {
+  function getRawBlockHeader(uint256 blockNumber) external view returns (bytes memory);
 }

@@ -82,6 +82,8 @@ contract DeployLighterLibrariesBatch1 is LighterManifest {
     _writeContract('configuratorLogic', r.configuratorLogic, 'ConfiguratorLogic');
     _writeContract('eModeLogic', r.eModeLogic, 'EModeLogic');
     if (sent) _recordSourceCommit();
+    // The harness reads the marker: a run without transactions writes no forge plan.
+    console.log('LUMINA-PHASE: libraries', sent ? 'transactions' : 'no transactions');
   }
 }
 
@@ -143,5 +145,7 @@ contract DeployLighterLibrariesBatch2 is LighterManifest {
     _writeContract('poolLogic', r.poolLogic, 'PoolLogic');
     _writeContract('supplyLogic', r.supplyLogic, 'SupplyLogic');
     if (sent) _recordSourceCommit();
+    // The harness reads the marker: a run without transactions writes no forge plan.
+    console.log('LUMINA-PHASE: libraries', sent ? 'transactions' : 'no transactions');
   }
 }

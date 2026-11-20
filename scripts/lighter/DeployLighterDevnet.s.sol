@@ -3,6 +3,7 @@ pragma solidity ^0.8.0;
 
 import {console} from 'forge-std/console.sol';
 import {LighterManifest} from './LighterManifest.sol';
+import {LighterSeedMath} from './LighterSeedMath.sol';
 import {LighterListingPayload} from './payloads/LighterListingPayload.sol';
 import {LighterMarketInput} from '../../src/deployments/inputs/LighterMarketInput.sol';
 import '../../src/deployments/interfaces/IMarketReportTypes.sol';
@@ -131,6 +132,8 @@ interface IACL {
 interface IPoolView {
   function getReserveData(address asset) external view returns (DataTypes.ReserveDataLegacy memory);
 
+  function getReserveNormalizedIncome(address asset) external view returns (uint256);
+
   function supply(address asset, uint256 amount, address onBehalfOf, uint16 referralCode) external;
 }
 
@@ -159,6 +162,10 @@ interface IDataProviderView {
   function getLiquidationProtocolFee(address asset) external view returns (uint256);
 
   function getFlashLoanEnabled(address asset) external view returns (bool);
+}
+
+interface IScaledBalance {
+  function scaledBalanceOf(address user) external view returns (uint256);
 }
 
 interface IImmutableAdminProxy {
@@ -211,6 +218,18 @@ contract DeployLighterDevnet is LighterManifest, LighterMarketInput {
   address internal constant DEAD = 0x000000000000000000000000000000000000dEaD;
   uint256 internal constant EXECUTOR_DELAY = 1 days;
   uint256 internal constant SAFE_THRESHOLD = 2;
+  uint256 internal constant SAFE_OWNERS = 3;
+  /// @dev Canonical Safe v1.3.0 code (harness/bytecode/manifest.json, the Lighter preinstalls).
+  bytes32 internal constant SAFE_PROXY_RUNTIME_HASH =
+    0xb89c1b3bdf2cf8827818646bce9a8f6e372885f8c55e5c07acbd307cb133b000;
+  address internal constant SAFE_L2_SINGLETON = 0xfb1bffC9d739B8D520DaF37dF666da4C687191EA;
+  bytes32 internal constant SAFE_L2_SINGLETON_HASH =
+    0x21842597390c4c6e3c1239e434a682b054bd9548eee5e9b1d6a4482731023c0f;
+  address internal constant SAFE_SINGLETON = 0x69f4D1788e39c87893C980c06EdF4b7f686e2938;
+  bytes32 internal constant SAFE_SINGLETON_HASH =
+    0xbba688fbdb21ad2bb58bc320638b43d94e7d100f6f3ebaab0a4e4de6304b1c2e;
+  bytes32 internal constant SAFE_FALLBACK_HANDLER_HASH =
+    0x03e69f7ce809e81687c69b19a7d7cca45b6d551ffdec73d9bb87178476de1abf;
   /// @dev Aave's scaled-balance rounding: a supply of `amount` can read back as `amount - 1`.
   uint256 internal constant SEED_ROUNDING = 1;
   string internal constant LOGIC = 'src/contracts/protocol/libraries/logic/';
@@ -319,6 +338,25 @@ contract DeployLighterDevnet is LighterManifest, LighterMarketInput {
     _finish('prepareListing');
   }
 
+  /**
+   * @notice Revokes any ACL role the listing payload still holds (a run that stopped between the
+   * grant and `execute()`). Runs first on every rerun and depends on nothing but the manifest's
+   * ACL manager and payload: no price source, wiring or listing check can keep the role open.
+   */
+  function clearListingRoles() external {
+    _loadManifest();
+    _in.deployer = _requireAddress('.deployer');
+    _requireNoForgeLibraryDeploys(_in.deployer);
+    if (
+      _isDeployed('.contracts.aclManager.address') &&
+      _isDeployed('.contracts.listingPayload.address')
+    ) {
+      _m.aclManager = _address('.contracts.aclManager.address');
+      _clearRoles(_address('.contracts.listingPayload.address'));
+    }
+    _finish('clearListingRoles');
+  }
+
   function listAndSeed() external {
     _begin();
     _readMarket();
@@ -334,13 +372,17 @@ contract DeployLighterDevnet is LighterManifest, LighterMarketInput {
       _clearRoles(_m.listingPayload);
     }
 
+    // Until the listing is published in the manifest, the mined values must be the launch ones,
+    // also when an interrupted earlier run listed (r1#7).
+    bool firstSetup = _isNull(_market(_in.wethMarketIndex, 'aToken')) ||
+      _isNull(_market(_in.usdcMarketIndex, 'aToken'));
+    if (firstSetup) _requireManifestRiskMatchesInput();
     if (!_listed()) {
       require(
         _m.listingPayload != address(0),
         'listAndSeed: no listing payload (run prepareListing)'
       );
       _checkPayload(_m.listingPayload);
-      _requireManifestRiskMatchesInput();
       _fundPayload(_m.listingPayload);
       IACL acl = IACL(_m.aclManager);
       require(
@@ -354,10 +396,10 @@ contract DeployLighterDevnet is LighterManifest, LighterMarketInput {
       LighterListingPayload(_m.listingPayload).execute();
       vm.stopBroadcast();
       _requireNoRole(_m.listingPayload, 'listing payload');
-      _checkLaunchValues();
     } else {
       console.log('listAndSeed: reserves already listed');
     }
+    if (firstSetup) _checkLaunchValues();
     _checkReserveWiring();
     _topUpSeeds();
     _writeReserves();
@@ -378,7 +420,8 @@ contract DeployLighterDevnet is LighterManifest, LighterMarketInput {
       vm.stopBroadcast();
       _writeContract('executor', _m.executor, 'Executor');
     }
-    _checkExecutor();
+    // An interrupted Safe probe may have left its no-op queued; handOver requires an empty queue.
+    _checkExecutor(false);
     _verifySafe();
     _finish('deployExecutor');
   }
@@ -401,7 +444,7 @@ contract DeployLighterDevnet is LighterManifest, LighterMarketInput {
 
     // Before anything is handed over: the Safe can drive the Executor (real 2-of-3 probe).
     _verifySafe();
-    _checkExecutor();
+    _checkExecutor(true);
     _verifyProbe();
     if (_m.listingPayload != address(0)) _clearRoles(_m.listingPayload);
     _checkReserveWiring();
@@ -439,9 +482,14 @@ contract DeployLighterDevnet is LighterManifest, LighterMarketInput {
     vm.startBroadcast(_in.deployer);
   }
 
+  /// @dev The harness reads the marker: a phase without transactions writes no forge plan.
   function _finish(string memory phase) internal {
-    if (_sent) _recordSourceCommit();
-    else console.log(phase, ': nothing sent');
+    if (_sent) {
+      _recordSourceCommit();
+      console.log('LUMINA-PHASE:', phase, 'transactions');
+    } else {
+      console.log('LUMINA-PHASE:', phase, 'no transactions');
+    }
   }
 
   // ============================================================================================
@@ -640,6 +688,7 @@ contract DeployLighterDevnet is LighterManifest, LighterMarketInput {
       require(c.ltv == p.ltv && c.lt == p.liqThreshold, string.concat(p.symbol, ': ltv / LT'));
       require(c.lb == 100_00 + p.liqBonus, string.concat(p.symbol, ': liquidation bonus'));
       require(c.rf == p.reserveFactor, string.concat(p.symbol, ': reserve factor'));
+      require(c.borrowing && c.collateral, string.concat(p.symbol, ': borrowing / collateral'));
       require(
         dp.getLiquidationProtocolFee(p.asset) == p.liqProtocolFee,
         string.concat(p.symbol, ': liquidation protocol fee')
@@ -671,6 +720,8 @@ contract DeployLighterDevnet is LighterManifest, LighterMarketInput {
       address asset = params[i].asset;
       ReserveConfig memory c = _reserveConfig(asset);
       require(c.active && !c.frozen, string.concat(params[i].symbol, ': not active'));
+      require(c.borrowing, string.concat(params[i].symbol, ': borrowing disabled'));
+      require(c.collateral, string.concat(params[i].symbol, ': not usable as collateral'));
       DataTypes.ReserveDataLegacy memory rd = IPoolView(_m.pool).getReserveData(asset);
       require(
         rd.interestRateStrategyAddress == _m.rateStrategy,
@@ -691,21 +742,33 @@ contract DeployLighterDevnet is LighterManifest, LighterMarketInput {
   }
 
   function _topUp(address asset, uint256 seed) internal {
+    // An interrupted earlier top-up may have left an approval: always cleared (N8).
+    if (IERC20(asset).allowance(_in.deployer, _m.pool) != 0) {
+      _startBroadcast();
+      IERC20(asset).approve(_m.pool, 0);
+      vm.stopBroadcast();
+    }
     address aToken = IPoolView(_m.pool).getReserveData(asset).aTokenAddress;
-    uint256 held = IERC20(aToken).balanceOf(DEAD);
-    if (held + SEED_ROUNDING >= seed) return;
-    uint256 shortfall = seed - held;
+    if (IERC20(aToken).balanceOf(DEAD) + SEED_ROUNDING >= seed) return;
+    // Deposit from the scaled-balance shortfall, rounded up: never a zero mint (r1#4).
+    uint256 amount = LighterSeedMath.topUpAmount(
+      seed,
+      IScaledBalance(aToken).scaledBalanceOf(DEAD),
+      IPoolView(_m.pool).getReserveNormalizedIncome(asset)
+    );
     require(
-      IERC20(asset).balanceOf(_in.deployer) >= shortfall,
+      IERC20(asset).balanceOf(_in.deployer) >= amount,
       string.concat(
-        'seed top-up: the deployer holds less than the shortfall of ',
+        'seed top-up: the deployer holds less than ',
+        vm.toString(amount),
+        ' of ',
         vm.toString(asset)
       )
     );
-    console.log('seed top-up', asset, shortfall);
+    console.log('seed top-up', asset, amount);
     _startBroadcast();
-    IERC20(asset).approve(_m.pool, shortfall);
-    IPoolView(_m.pool).supply(asset, shortfall, DEAD, 0);
+    IERC20(asset).approve(_m.pool, amount);
+    IPoolView(_m.pool).supply(asset, amount, DEAD, 0);
     vm.stopBroadcast();
     require(IERC20(asset).allowance(_in.deployer, _m.pool) == 0, 'top-up allowance left');
   }
@@ -726,46 +789,59 @@ contract DeployLighterDevnet is LighterManifest, LighterMarketInput {
   // deployExecutor / handOver
   // ============================================================================================
 
-  function _checkExecutor() internal view {
+  function _checkExecutor(bool requireEmptyQueue) internal view {
     Executor executor = Executor(_m.executor);
     require(executor.owner() == _in.safe, 'Executor owner is not the Safe');
     require(executor.pendingOwner() == address(0), 'Executor has a pending owner');
     require(executor.delay() == EXECUTOR_DELAY, 'Executor delay');
     require(!executor.emergencyEnabled(), 'Executor emergency path enabled');
-    require(executor.queuedCount() == 0, 'Executor has queued actions');
+    if (requireEmptyQueue) require(executor.queuedCount() == 0, 'Executor has queued actions');
   }
 
   /**
-   * @dev The Safe behind every role: code, the manifest owners and threshold 2, the manifest's
-   * `safe.singleton` (slot 0) and `safe.fallbackHandler` (the loader pins both to the canonical
-   * v1.3.0 SafeL2 and CompatibilityFallbackHandler), no module, no transaction guard, the
-   * manifest version.
+   * @dev The Safe behind every role, before anything is handed over (r1#3), pinned to spec 3.4
+   * rather than to the manifest's own lists: exactly SAFE_OWNERS owners (each a manifest owner) and
+   * threshold SAFE_THRESHOLD; the runtime is the GnosisSafeProxy v1.3.0 proxy; slot 0 is the
+   * manifest's `safe.singleton` and its code is that canonical v1.3.0 singleton's; the fallback
+   * handler slot is `safe.fallbackHandler` and its code is the v1.3.0 CompatibilityFallbackHandler;
+   * no module, no transaction guard, the manifest version.
    */
   function _verifySafe() internal view {
     address safe = _in.safe;
-    require(safe.code.length > 0, 'Safe: no code');
+    require(
+      safe.codehash == SAFE_PROXY_RUNTIME_HASH,
+      'Safe: runtime is not the GnosisSafeProxy v1.3.0 proxy'
+    );
     address[] memory owners = ISafeView(safe).getOwners();
     address[] memory expected = vm.parseJsonAddressArray(_json, '.safe.owners');
-    require(owners.length == expected.length, 'Safe: owner count');
+    require(
+      owners.length == SAFE_OWNERS && expected.length == SAFE_OWNERS,
+      'Safe: owner count is not 3'
+    );
     for (uint256 i = 0; i < expected.length; i++) {
       bool found;
       for (uint256 j = 0; j < owners.length; j++) found = found || owners[j] == expected[i];
       require(found, string.concat('Safe lacks owner ', vm.toString(expected[i])));
     }
-    require(
-      ISafeView(safe).getThreshold() == SAFE_THRESHOLD &&
-        _uint('.safe.threshold') == SAFE_THRESHOLD,
-      'Safe: threshold is not 2'
-    );
+    require(ISafeView(safe).getThreshold() == SAFE_THRESHOLD, 'Safe: threshold is not 2');
     address singleton = address(uint160(uint256(vm.load(safe, bytes32(0)))));
     require(
       singleton == _requireAddress('.safe.singleton'),
       'Safe: singleton is not safe.singleton'
     );
+    require(
+      (singleton == SAFE_L2_SINGLETON && singleton.codehash == SAFE_L2_SINGLETON_HASH) ||
+        (singleton == SAFE_SINGLETON && singleton.codehash == SAFE_SINGLETON_HASH),
+      'Safe: singleton code is not the canonical v1.3.0 singleton'
+    );
     address handler = address(uint160(uint256(vm.load(safe, SAFE_FALLBACK_HANDLER_SLOT))));
     require(
       handler == _requireAddress('.safe.fallbackHandler'),
       'Safe: fallback handler is not safe.fallbackHandler'
+    );
+    require(
+      handler.codehash == SAFE_FALLBACK_HANDLER_HASH,
+      'Safe: fallback handler code is not CompatibilityFallbackHandler v1.3.0'
     );
     require(vm.load(safe, SAFE_GUARD_SLOT) == bytes32(0), 'Safe: a transaction guard is set');
     (address[] memory modules, ) = ISafeView(safe).getModulesPaginated(SAFE_SENTINEL_MODULES, 10);
@@ -786,7 +862,8 @@ contract DeployLighterDevnet is LighterManifest, LighterMarketInput {
   function _verifyProbe() internal {
     string memory cp = vm.readFile(vm.envString('LUMINA_DEPLOY_CHECKPOINT'));
     require(
-      vm.keyExistsJson(cp, '.safeProbe'),
+      vm.keyExistsJson(cp, '.safeProbe') &&
+        keccak256(bytes(vm.parseJsonString(cp, '.safeProbe.state'))) == keccak256('done'),
       'handOver: no Safe probe recorded in the checkpoint'
     );
     Executor executor = Executor(_m.executor);
@@ -803,51 +880,46 @@ contract DeployLighterDevnet is LighterManifest, LighterMarketInput {
     uint256 eta = vm.parseJsonUint(cp, '.safeProbe.eta');
     bytes32 action = executor.getTransactionHash(address(executor), data, eta);
     require(action == vm.parseJsonBytes32(cp, '.safeProbe.action'), 'Safe probe: action hash');
-    uint256 queuedIn = _checkProbeReceipt(
+    uint256 deployedAt = _uint('.deploymentBlock');
+    uint256 queuedIn = _checkProbeTx(
       vm.parseJsonBytes32(cp, '.safeProbe.queueTx'),
       QUEUE_EVENT,
-      action
+      action,
+      deployedAt
     );
-    uint256 cancelledIn = _checkProbeReceipt(
+    uint256 cancelledIn = _checkProbeTx(
       vm.parseJsonBytes32(cp, '.safeProbe.cancelTx'),
       CANCEL_EVENT,
-      action
+      action,
+      deployedAt
     );
     require(cancelledIn >= queuedIn, 'Safe probe: cancel before queue');
     require(!executor.isQueued(action), 'Safe probe: action still queued');
     console.log(
-      'Safe probe verified: queued in block',
+      'Safe probe verified on this fork: queued in block',
       queuedIn,
       'cancelled in block',
       cancelledIn
     );
   }
 
-  /// @return blockNumber of the receipt
-  function _checkProbeReceipt(
+  /**
+   * @dev On the active fork (eth_getLogs, canonical block): the transaction carries the
+   * Executor's event for exactly this action (queueTransaction / cancelTransaction are
+   * owner-only, so the Safe made the call) and the Safe's ExecutionSuccess (2 of 3 signatures).
+   * @return blockNumber of the transaction
+   */
+  function _checkProbeTx(
     bytes32 txHash,
     bytes32 eventSig,
-    bytes32 action
-  ) internal returns (uint256) {
-    string memory r = _receipt(txHash);
-    require(vm.parseJsonUint(r, '.status') == 1, 'Safe probe: transaction failed');
-    require(vm.parseJsonAddress(r, '.to') == _in.safe, 'Safe probe: not sent to the Safe');
-    bool executorEvent;
-    bool safeSuccess;
-    for (uint256 i = 0; vm.keyExistsJson(r, string.concat('.logs[', vm.toString(i), ']')); i++) {
-      string memory log = string.concat('.logs[', vm.toString(i), ']');
-      address emitter = vm.parseJsonAddress(r, string.concat(log, '.address'));
-      bytes32 topic0 = vm.parseJsonBytes32(r, string.concat(log, '.topics[0]'));
-      if (emitter == _m.executor && topic0 == eventSig) {
-        executorEvent =
-          executorEvent ||
-          vm.parseJsonBytes32(r, string.concat(log, '.topics[1]')) == action;
-      }
-      if (emitter == _in.safe && topic0 == SAFE_SUCCESS_EVENT) safeSuccess = true;
-    }
-    require(executorEvent, 'Safe probe: the Executor event for the action is missing');
-    require(safeSuccess, 'Safe probe: no Safe ExecutionSuccess');
-    return vm.parseJsonUint(r, '.blockNumber');
+    bytes32 action,
+    uint256 fromBlock
+  ) internal returns (uint256 blockNumber) {
+    blockNumber = _requireLog(_m.executor, eventSig, action, txHash, fromBlock);
+    require(
+      _requireLog(_in.safe, SAFE_SUCCESS_EVENT, bytes32(0), txHash, blockNumber) == blockNumber,
+      'Safe probe: no Safe ExecutionSuccess in the transaction'
+    );
   }
 
   function _handOver() internal {
