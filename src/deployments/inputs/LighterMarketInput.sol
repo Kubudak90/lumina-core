@@ -16,10 +16,11 @@ interface ILighterDecimals {
  * the HyperEVM `DefaultMarketInput`.
  *
  * Roles during the batch (CORE-02): the deployer is market owner and pool admin only for the
- * length of the deploy script, which lists, seeds and then hands every role to the Safe / Executor
- * and revokes itself (`scripts/lighter/DeployLighterDevnet.s.sol`). EMERGENCY_ADMIN goes to the
- * Safe directly. The treasury / fee receiver is the Safe (spec 3.4): `config.treasury` is set, so
- * the batch deploys no Collector.
+ * length of the deploy (`scripts/lighter/DeployLighterDevnet.s.sol`), which sets the sources, lists
+ * and seeds, then hands every role to the Safe / Executor and revokes itself. EMERGENCY_ADMIN goes
+ * to the Safe directly. The treasury / fee receiver is the Safe (spec 3.4): `config.treasury` is
+ * set, so the batch deploys no Collector. The price guard is not a market input: it is deployed
+ * after the market, against the real PoolAddressesProvider (plan.md, S4c deploy order).
  *
  * Risk parameters (spec 3.1) and the values chosen here (governance-tunable by the Safe):
  *
@@ -60,7 +61,6 @@ abstract contract LighterMarketInput is MarketInput {
     address safe; // Safe 2/3: EMERGENCY_ADMIN at the batch, treasury / fee receiver
     address ethPriceSource; // LighterCorePriceSource, Core market 0 (ETH perp), prices WETH
     address usdcPriceSource; // FixedPriceSource, $1.00, prices USDC
-    address priceGuard; // LuminaPriceGuard, the PriceOracleSentinel
   }
 
   /// @notice Risk parameters of one reserve, in the config engine's units (bps, whole tokens).
@@ -223,7 +223,6 @@ abstract contract LighterMarketInput is MarketInput {
     _requireCode(ext.safe, 'Safe');
     _requireCode(ext.ethPriceSource, 'ETH price source');
     _requireCode(ext.usdcPriceSource, 'USDC price source');
-    _requireCode(ext.priceGuard, 'price guard');
     require(
       ILighterDecimals(LIGHTER_WETH9).decimals() == 18,
       'LighterMarketInput: WETH9 decimals != 18'

@@ -34,7 +34,8 @@ import {SupplyLogic} from '../../src/contracts/protocol/libraries/logic/SupplyLo
  * Every script also refuses to run if forge queued library deployments of its own
  * (`_requireNoForgeLibraryDeploys`).
  *
- * Idempotent: a batch whose libraries all have code at their CREATE2 addresses sends nothing.
+ * Idempotent: a batch whose libraries all have code at their CREATE2 addresses sends nothing and
+ * leaves sourceCommits as recorded.
  * Run with --ffi (git provenance) and --slow.
  */
 
@@ -55,6 +56,7 @@ contract DeployLighterLibrariesBatch1 is LighterManifest {
     address deployer = _requireAddress('.deployer');
     _requireNoForgeLibraryDeploys(deployer);
     LibrariesReport memory r;
+    bool sent;
     r.borrowLogic = _predictLibrary(type(BorrowLogic).creationCode);
     r.bridgeLogic = _predictLibrary(type(BridgeLogic).creationCode);
     r.configuratorLogic = _predictLibrary(type(ConfiguratorLogic).creationCode);
@@ -63,7 +65,7 @@ contract DeployLighterLibrariesBatch1 is LighterManifest {
     if (_allHaveCode(r.borrowLogic, r.bridgeLogic, r.configuratorLogic, r.eModeLogic)) {
       console.log('libraries batch 1: already deployed, nothing sent');
     } else {
-      _requireCleanCheckout();
+      _beforeBroadcast();
       vm.startBroadcast(deployer);
       AaveV3LibrariesBatch1 batch = new AaveV3LibrariesBatch1();
       vm.stopBroadcast();
@@ -72,13 +74,14 @@ contract DeployLighterLibrariesBatch1 is LighterManifest {
       require(deployed.bridgeLogic == r.bridgeLogic, 'BridgeLogic address');
       require(deployed.configuratorLogic == r.configuratorLogic, 'ConfiguratorLogic address');
       require(deployed.eModeLogic == r.eModeLogic, 'EModeLogic address');
+      sent = true;
     }
 
     _writeContract('borrowLogic', r.borrowLogic, 'BorrowLogic');
     _writeContract('bridgeLogic', r.bridgeLogic, 'BridgeLogic');
     _writeContract('configuratorLogic', r.configuratorLogic, 'ConfiguratorLogic');
     _writeContract('eModeLogic', r.eModeLogic, 'EModeLogic');
-    _writeSourceCommit();
+    if (sent) _recordSourceCommit();
   }
 }
 
@@ -95,6 +98,7 @@ contract DeployLighterLibrariesBatch2 is LighterManifest {
     );
 
     LibrariesReport memory r;
+    bool sent;
     r.flashLoanLogic = _predictLibrary(type(FlashLoanLogic).creationCode);
     r.liquidationLogic = _predictLibrary(type(LiquidationLogic).creationCode);
     r.poolLogic = _predictLibrary(type(PoolLogic).creationCode);
@@ -103,7 +107,7 @@ contract DeployLighterLibrariesBatch2 is LighterManifest {
     if (_allHaveCode(r.flashLoanLogic, r.liquidationLogic, r.poolLogic, r.supplyLogic)) {
       console.log('libraries batch 2: already deployed, nothing sent');
     } else {
-      _requireCleanCheckout();
+      _beforeBroadcast();
       vm.startBroadcast(deployer);
       AaveV3LibrariesBatch2 batch = new AaveV3LibrariesBatch2();
       vm.stopBroadcast();
@@ -112,12 +116,13 @@ contract DeployLighterLibrariesBatch2 is LighterManifest {
       require(deployed.liquidationLogic == r.liquidationLogic, 'LiquidationLogic address');
       require(deployed.poolLogic == r.poolLogic, 'PoolLogic address');
       require(deployed.supplyLogic == r.supplyLogic, 'SupplyLogic address');
+      sent = true;
     }
 
     _writeContract('flashLoanLogic', r.flashLoanLogic, 'FlashLoanLogic');
     _writeContract('liquidationLogic', r.liquidationLogic, 'LiquidationLogic');
     _writeContract('poolLogic', r.poolLogic, 'PoolLogic');
     _writeContract('supplyLogic', r.supplyLogic, 'SupplyLogic');
-    _writeSourceCommit();
+    if (sent) _recordSourceCommit();
   }
 }

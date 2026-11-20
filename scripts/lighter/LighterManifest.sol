@@ -285,8 +285,63 @@ abstract contract LighterManifest is Script {
     );
   }
 
-  function _writeSourceCommit() internal {
-    _write(string.concat('.sourceCommits.', CORE_REPO), _q(_gitHead()));
+  /// @dev The lumina-core commit the manifest records, or '' when it is still null.
+  function _recordedCommit() internal view returns (string memory) {
+    string memory key = string.concat('.sourceCommits.', CORE_REPO);
+    if (_isNull(key)) return '';
+    return vm.parseJsonString(_json, key);
+  }
+
+  /**
+   * @dev Call before a phase sends anything. A clean checkout (see `_requireCleanCheckout`), and a
+   * partial deploy is only continued from the commit that started it: every lumina-core contract
+   * in one manifest is built from one `sourceCommits` entry.
+   */
+  function _beforeBroadcast() internal {
+    _requireCleanCheckout();
+    string memory recorded = _recordedCommit();
+    string memory head = _gitHead();
+    require(
+      bytes(recorded).length == 0 || keccak256(bytes(recorded)) == keccak256(bytes(head)),
+      string.concat(
+        'lumina-core HEAD ',
+        head,
+        ' differs from the manifest sourceCommits ',
+        recorded,
+        ': continue a partial deploy from the commit that started it'
+      )
+    );
+  }
+
+  /// @dev Call after a phase sent transactions: records HEAD when no commit is recorded yet. A
+  /// phase that sent nothing never touches sourceCommits.
+  function _recordSourceCommit() internal {
+    if (bytes(_recordedCommit()).length == 0) {
+      _write(string.concat('.sourceCommits.', CORE_REPO), _q(_gitHead()));
+    }
+  }
+
+  // ------------------------------------------------------------------------------------------
+  // Receipts (needs --ffi: `cast receipt --json`, fixed argv, no shell)
+  // ------------------------------------------------------------------------------------------
+
+  /// @dev The RPC URL from the env var the manifest names (`rpcEnv`), as the deploy was started.
+  function _rpcUrl() internal view returns (string memory) {
+    return vm.envString(vm.parseJsonString(_json, '.rpcEnv'));
+  }
+
+  /// @dev The mined receipt of `txHash` as JSON text (reverts if the node does not know it).
+  function _receipt(bytes32 txHash) internal returns (string memory) {
+    string[] memory cmd = new string[](6);
+    cmd[0] = 'cast';
+    cmd[1] = 'receipt';
+    cmd[2] = '--rpc-url';
+    cmd[3] = _rpcUrl();
+    cmd[4] = vm.toString(txHash);
+    cmd[5] = '--json';
+    bytes memory out = vm.ffi(cmd);
+    require(out.length > 2 && out[0] == '{', string.concat('no receipt for ', vm.toString(txHash)));
+    return string(out);
   }
 
   /// @dev True when the 20 bytes of `a` occur in `code` (a linked library address).
