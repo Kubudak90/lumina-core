@@ -21,7 +21,7 @@ jobs:
     # we want this action to only run on a success & failure though
     if: ${{ github.event.workflow_run.conclusion == 'success' || github.event.workflow_run.conclusion == 'failure' }}
     steps:
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           name: pr_number
           path: pr/
@@ -32,7 +32,7 @@ jobs:
         id: get_pr_number
         run: echo "pr_number=$(cat pr/pr_number.txt)" >> $GITHUB_OUTPUT
 
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           name: ${{ github.event.workflow_run.head_sha }}
           path: tmp/
