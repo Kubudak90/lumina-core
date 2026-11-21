@@ -67,7 +67,7 @@ jobs:
           echo "$delimiter" >> $GITHUB_OUTPUT
 
       - name: Create or update commit comment
-        uses: peter-evans/commit-comment@ae7c3825ead23dab7a1ad8cd4df9617ab4bf0b37
+        uses: peter-evans/commit-comment@adf2b4dda30eed46ca808d24518e618d3386ccfa
         if: ${{ steps.get_pr_number.outputs.pr_number == null }}
         with:
           sha: ${{ github.event.workflow_run.head_sha }}
