@@ -15,7 +15,17 @@ fs_permissions = [
     { access = "write", path = "./reports" },
     { access = "read", path = "./out" },
     { access = "read", path = "./config" },
+    # Lighter deploy (scripts/lighter): the staged manifest copy; see scripts/lighter/LighterManifest.sol
+    { access = "read-write", path = "./reports/lighter" },
 ]
+# CORE-06: no shell access from tests by default.
+# - Market deploy scripts (MetadataReporter reads git metadata via ffi) must run with `--ffi`.
+# - The optional human-readable report diffs (tests/utils/DiffUtils.sol) need ffi and the
+#   project-local aave-cli; they are currently UNSUPPORTED for chain 31337 (see DiffUtils.sol):
+#   FOUNDRY_PROFILE=reports AAVE_CLI_DIFFS=true forge test --match-path 'tests/extensions/v3-config-engine/*'
+ffi = false
+
+[profile.reports]
 ffi = true
 
 [fuzz]
@@ -41,6 +51,7 @@ bnb = "${RPC_BNB}"
 gnosis = "${RPC_GNOSIS}"
 base = "${RPC_BASE}"
 metis = "${RPC_METIS}"
+lighter = "${LIGHTER_DEVNET_RPC_URL}"
 
 [etherscan]
 mainnet = { key = "${ETHERSCAN_API_KEY_MAINNET}", chainId = 1 }

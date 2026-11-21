@@ -1,85 +1,398 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.20;
 
-import {Ownable} from '../../dependencies/openzeppelin/contracts/Ownable.sol';
+/**
+ * @title Executor
+ * @notice Timelocked governance executor. The owner (a Safe) queues actions; each action can be
+ * executed by the owner after `delay` has elapsed and within `GRACE_PERIOD`.
+ *
+ * Two kinds of action can be queued:
+ *  - Payload: `target` is a contract whose `execute()` is DELEGATECALLed in the Executor's context
+ *    (Aave config-engine payload model). `data` must be empty. The queue entry commits to
+ *    `(target, extcodehash(target), eta)`; execution reverts if the target's code changed.
+ *    EIP-7702 delegation designators (`0xef0100 || address`) are rejected as targets on every
+ *    path: their codehash pins only the pointer, not the code a DELEGATECALL would run.
+ *  - Self-governance call: `target == address(this)` and `data` is a call to `setDelay`,
+ *    `transferOwnership` or `setEmergencyEnabled` with exactly one ABI word, validated at queue
+ *    time. It is executed with a plain CALL from the Executor to itself, so no foreign code runs in
+ *    the Executor's storage context. These three functions can only be called by the Executor
+ *    itself, i.e. only through the queue.
+ *
+ * Payload review (off-chain, during the delay) remains the trust boundary. The codehash pins only
+ * the target's own bytecode, so review must reject:
+ *  - targets that are proxies or otherwise DELEGATECALL/CALL into code that can change behind an
+ *    unchanged codehash (upgradeable implementations, registries, metamorphic contracts);
+ *  - payloads that call back into the Executor (`execute`, `emergencyExecute`, queue functions).
+ *    The guard below stops persistent governance-state changes; it does not stop a reviewed payload
+ *    from using the Executor's authority, which is what a payload is for;
+ *  - payloads that SELFDESTRUCT (on chains before EIP-6780 this would delete the Executor).
+ * The emergency path, once enabled through the queue, runs any payload without delay; keep it
+ * disabled unless an emergency procedure requires it. A payload can emit arbitrary events under the
+ * Executor's address, so indexers and bots must verify queue state with `isQueued` /
+ * `queuedTransactionAt` rather than trust events alone. `ExecuteTransaction` and
+ * `EmergencyExecuted` are emitted after the guard check.
+ *
+ * Storage-integrity guard: a payload runs with full write access to this contract's storage. Every
+ * DELEGATECALL (`execute` of a payload and `emergencyExecute`) is wrapped by a guard that hashes
+ * every storage slot this contract uses before the call and reverts with `GovernanceStateModified`
+ * if any of them differs afterwards. The guarded range covers owner, pending owner, delay, the
+ * emergency flag, the queue length and every slot of the bounded queue (active or not). The queue
+ * is a fixed-size array (MAX_QUEUED entries) rather than a mapping, so the guarded range is
+ * bounded, and the Executor reads no storage outside that range. The pre-call hash lives on the
+ * stack of the outer call frame, which the payload cannot read or write; to pass the check the
+ * payload would have to leave every guarded slot exactly as it found it (no net change) or find a
+ * keccak256 second preimage. Governance changes from inside a payload, whether raw SSTOREs or calls
+ * to the self-governance functions, are therefore rejected; they must be queued as their own
+ * self-governance action. The entry being executed is removed before the snapshot, so the guard
+ * protects every other queue entry.
+ *
+ * Storage layout (do not reorder or insert variables; `GOVERNANCE_SLOT_COUNT` must cover all of it):
+ *   slot 0              _owner
+ *   slot 1              _pendingOwner
+ *   slot 2              _delay
+ *   slot 3              _emergencyEnabled
+ *   slot 4              _queueLength
+ *   slots 5 .. 5+2N-1   _queue[N] (txHash, codehash), N = MAX_QUEUED
+ */
+contract Executor {
+  struct QueuedTransaction {
+    bytes32 txHash;
+    bytes32 codehash;
+  }
 
-contract Executor is Ownable {
   uint256 public constant MINIMUM_DELAY = 1 days;
   uint256 public constant MAXIMUM_DELAY = 30 days;
+  uint256 public constant GRACE_PERIOD = 14 days;
+  /// @notice Maximum number of simultaneously queued actions (bounds the integrity guard).
+  uint256 public constant MAX_QUEUED = 16;
+  /// @notice Number of storage slots (starting at slot 0) hashed by the integrity guard.
+  uint256 public constant GOVERNANCE_SLOT_COUNT = 5 + 2 * MAX_QUEUED;
 
-  uint256 public delay;
-  mapping(bytes32 => bool) public queuedTransactions;
+  uint256 private constant NOT_FOUND = type(uint256).max;
 
-  event NewDelay(uint256 indexed newDelay);
-  event QueueTransaction(bytes32 indexed txHash, address indexed target, uint256 eta);
-  event ExecuteTransaction(bytes32 indexed txHash, address indexed target, uint256 eta);
-  event CancelTransaction(bytes32 indexed txHash, address indexed target, uint256 eta);
+  address private _owner; // slot 0
+  address private _pendingOwner; // slot 1
+  uint256 private _delay; // slot 2
+  bool private _emergencyEnabled; // slot 3
+  uint256 private _queueLength; // slot 4
+  QueuedTransaction[MAX_QUEUED] private _queue; // slots 5 .. 5 + 2 * MAX_QUEUED - 1
 
-  constructor(uint256 _delay) {
-    require(_delay >= MINIMUM_DELAY, 'delay < minimum');
-    require(_delay <= MAXIMUM_DELAY, 'delay > maximum');
-    delay = _delay;
+  event QueueTransaction(
+    bytes32 indexed txHash,
+    address indexed target,
+    bytes32 codehash,
+    bytes data,
+    uint256 eta
+  );
+  event CancelTransaction(bytes32 indexed txHash, address indexed target, bytes data, uint256 eta);
+  event CancelTransactionByHash(bytes32 indexed txHash);
+  event ExecuteTransaction(
+    bytes32 indexed txHash,
+    address indexed target,
+    bytes32 codehash,
+    bytes data,
+    uint256 eta
+  );
+  event EmergencyExecuted(address indexed target, bytes32 codehash);
+  event NewDelay(uint256 oldDelay, uint256 newDelay);
+  event EmergencyStatusChanged(bool enabled);
+  event OwnershipTransferStarted(address indexed previousOwner, address indexed newOwner);
+  event OwnershipTransferred(address indexed previousOwner, address indexed newOwner);
+
+  error NotOwner();
+  error NotSelf();
+  error NotPendingOwner();
+  error InvalidOwner();
+  error InvalidDelay(uint256 delay);
+  error InvalidTarget(address target);
+  error DelegatedTarget(address target);
+  error InvalidSelfCall();
+  error PayloadDataNotEmpty();
+  error AlreadyQueued(bytes32 txHash);
+  error NotQueued(bytes32 txHash);
+  error QueueFull();
+  error NotReady(uint256 eta);
+  error Expired(uint256 eta);
+  error CodehashMismatch(bytes32 queued, bytes32 current);
+  error EmergencyDisabled();
+  error GovernanceStateModified();
+
+  modifier onlyOwner() {
+    if (msg.sender != _owner) revert NotOwner();
+    _;
   }
 
-  function setDelay(uint256 _delay) external onlyOwner {
-    require(_delay >= MINIMUM_DELAY, 'delay < minimum');
-    require(_delay <= MAXIMUM_DELAY, 'delay > maximum');
-    delay = _delay;
-    emit NewDelay(_delay);
+  /// @dev Only the Executor itself, i.e. a queued self-governance action.
+  modifier onlySelf() {
+    if (msg.sender != address(this)) revert NotSelf();
+    _;
   }
 
-  function queueTransaction(address _target) external onlyOwner returns (bytes32) {
-    uint256 eta = block.timestamp + delay;
-    bytes32 txHash = keccak256(abi.encode(_target, eta));
-    require(!queuedTransactions[txHash], 'already queued');
-
-    queuedTransactions[txHash] = true;
-    emit QueueTransaction(txHash, _target, eta);
-    return txHash;
+  /// @dev The emergency path starts disabled; it can only be enabled through the queue.
+  constructor(address initialOwner, uint256 initialDelay) {
+    if (initialOwner == address(0) || initialOwner == address(this)) revert InvalidOwner();
+    _validateDelay(initialDelay);
+    _owner = initialOwner;
+    _delay = initialDelay;
+    emit OwnershipTransferred(address(0), initialOwner);
+    emit NewDelay(0, initialDelay);
   }
 
-  function cancelTransaction(address _target, uint256 _eta) external onlyOwner {
-    bytes32 txHash = keccak256(abi.encode(_target, _eta));
-    require(queuedTransactions[txHash], 'not queued');
+  // ---------------------------------------------------------------------------------------------
+  // Views
+  // ---------------------------------------------------------------------------------------------
 
-    queuedTransactions[txHash] = false;
-    emit CancelTransaction(txHash, _target, _eta);
+  function owner() external view returns (address) {
+    return _owner;
   }
 
-  function execute(address _target, uint256 _eta) external onlyOwner {
-    bytes32 txHash = keccak256(abi.encode(_target, _eta));
-    require(queuedTransactions[txHash], 'not queued');
-    require(block.timestamp >= _eta, 'not ready');
-    require(block.timestamp <= _eta + 14 days, 'expired');
-
-    queuedTransactions[txHash] = false;
-
-    (bool success, bytes memory returnData) = _target.delegatecall(
-      abi.encodeWithSignature('execute()')
-    );
-    require(success, string(returnData));
-
-    emit ExecuteTransaction(txHash, _target, _eta);
+  function pendingOwner() external view returns (address) {
+    return _pendingOwner;
   }
 
-  /// @notice Emergency execute without timelock — can be permanently disabled
-  bool public emergencyDisabled;
-
-  event EmergencyExecuted(address indexed target);
-  event EmergencyPermanentlyDisabled();
-
-  function emergencyExecute(address _target) external onlyOwner {
-    require(!emergencyDisabled, 'emergency disabled');
-    (bool success, bytes memory returnData) = _target.delegatecall(
-      abi.encodeWithSignature('execute()')
-    );
-    require(success, string(returnData));
-    emit EmergencyExecuted(_target);
+  function delay() external view returns (uint256) {
+    return _delay;
   }
 
-  /// @notice Permanently disable emergency execute — cannot be undone
+  function emergencyEnabled() external view returns (bool) {
+    return _emergencyEnabled;
+  }
+
+  function queuedCount() external view returns (uint256) {
+    return _queueLength;
+  }
+
+  function queuedTransactionAt(
+    uint256 index
+  ) external view returns (bytes32 txHash, bytes32 codehash) {
+    require(index < _queueLength, 'index out of bounds');
+    QueuedTransaction storage entry = _queue[index];
+    return (entry.txHash, entry.codehash);
+  }
+
+  function isQueued(bytes32 txHash) external view returns (bool) {
+    return _indexOf(txHash) != NOT_FOUND;
+  }
+
+  function getTransactionHash(
+    address target,
+    bytes calldata data,
+    uint256 eta
+  ) public pure returns (bytes32) {
+    return keccak256(abi.encode(target, data, eta));
+  }
+
+  // ---------------------------------------------------------------------------------------------
+  // Queue
+  // ---------------------------------------------------------------------------------------------
+
+  /**
+   * @notice Queue an action with `eta = block.timestamp + delay`.
+   * @param target a payload contract (its `execute()` is delegatecalled), or `address(this)` for a
+   * self-governance call
+   * @param data empty for a payload; the self-governance calldata when `target == address(this)`
+   */
+  function queueTransaction(
+    address target,
+    bytes calldata data
+  ) external onlyOwner returns (bytes32 txHash, uint256 eta) {
+    _validateAction(target, data);
+    bytes32 codehash = target.codehash;
+    eta = block.timestamp + _delay;
+    txHash = getTransactionHash(target, data, eta);
+    if (_indexOf(txHash) != NOT_FOUND) revert AlreadyQueued(txHash);
+    uint256 length = _queueLength;
+    if (length >= MAX_QUEUED) revert QueueFull();
+
+    _queue[length] = QueuedTransaction({txHash: txHash, codehash: codehash});
+    _queueLength = length + 1;
+    emit QueueTransaction(txHash, target, codehash, data, eta);
+  }
+
+  function cancelTransaction(address target, bytes calldata data, uint256 eta) external onlyOwner {
+    bytes32 txHash = getTransactionHash(target, data, eta);
+    uint256 index = _indexOf(txHash);
+    if (index == NOT_FOUND) revert NotQueued(txHash);
+    _remove(index);
+    emit CancelTransaction(txHash, target, data, eta);
+  }
+
+  /// @notice Cancel by hash only (e.g. an expired entry read from `queuedTransactionAt`).
+  function cancelTransactionByHash(bytes32 txHash) external onlyOwner {
+    uint256 index = _indexOf(txHash);
+    if (index == NOT_FOUND) revert NotQueued(txHash);
+    _remove(index);
+    emit CancelTransactionByHash(txHash);
+  }
+
+  function execute(address target, bytes calldata data, uint256 eta) external onlyOwner {
+    bytes32 txHash = getTransactionHash(target, data, eta);
+    uint256 index = _indexOf(txHash);
+    if (index == NOT_FOUND) revert NotQueued(txHash);
+    if (block.timestamp < eta) revert NotReady(eta);
+    if (block.timestamp > eta + GRACE_PERIOD) revert Expired(eta);
+    if (target != address(this) && _isDelegationDesignator(target)) revert DelegatedTarget(target);
+    bytes32 codehash = _queue[index].codehash;
+    if (target.codehash != codehash) revert CodehashMismatch(codehash, target.codehash);
+
+    // Effects before interactions; the guard snapshot below excludes this entry.
+    _remove(index);
+
+    if (target == address(this)) {
+      // Self-governance call: only the Executor's own code runs (allow-listed at queue time).
+      (bool success, bytes memory returnData) = address(this).call(data);
+      if (!success) _bubbleRevert(returnData);
+    } else {
+      _guardedDelegatecall(target);
+    }
+
+    emit ExecuteTransaction(txHash, target, codehash, data, eta);
+  }
+
+  // ---------------------------------------------------------------------------------------------
+  // Emergency path (disabled until enabled through the queue)
+  // ---------------------------------------------------------------------------------------------
+
+  /// @notice Delegatecall `target.execute()` without delay. Only while enabled through the queue.
+  function emergencyExecute(address target) external onlyOwner {
+    if (!_emergencyEnabled) revert EmergencyDisabled();
+    if (target == address(this) || target.code.length == 0) revert InvalidTarget(target);
+    if (_isDelegationDesignator(target)) revert DelegatedTarget(target);
+    bytes32 codehash = target.codehash;
+    _guardedDelegatecall(target);
+    emit EmergencyExecuted(target, codehash);
+  }
+
+  /// @notice The owner can switch the emergency path off at once; switching it on needs the queue.
   function disableEmergency() external onlyOwner {
-    emergencyDisabled = true;
-    emit EmergencyPermanentlyDisabled();
+    if (_emergencyEnabled) {
+      _emergencyEnabled = false;
+      emit EmergencyStatusChanged(false);
+    }
+  }
+
+  // ---------------------------------------------------------------------------------------------
+  // Self-governance (callable only by the Executor itself, i.e. through the queue)
+  // ---------------------------------------------------------------------------------------------
+
+  function setDelay(uint256 newDelay) external onlySelf {
+    _validateDelay(newDelay);
+    uint256 oldDelay = _delay;
+    _delay = newDelay;
+    emit NewDelay(oldDelay, newDelay);
+  }
+
+  /// @notice Step 1 of 2: propose `newOwner`. `address(0)` clears a pending proposal.
+  function transferOwnership(address newOwner) external onlySelf {
+    if (newOwner == address(this)) revert InvalidOwner();
+    _pendingOwner = newOwner;
+    emit OwnershipTransferStarted(_owner, newOwner);
+  }
+
+  function setEmergencyEnabled(bool enabled) external onlySelf {
+    _emergencyEnabled = enabled;
+    emit EmergencyStatusChanged(enabled);
+  }
+
+  /// @notice Step 2 of 2: the pending owner accepts.
+  function acceptOwnership() external {
+    address newOwner = _pendingOwner;
+    if (msg.sender != newOwner) revert NotPendingOwner();
+    address oldOwner = _owner;
+    _owner = newOwner;
+    _pendingOwner = address(0);
+    emit OwnershipTransferred(oldOwner, newOwner);
+  }
+
+  // ---------------------------------------------------------------------------------------------
+  // Internals
+  // ---------------------------------------------------------------------------------------------
+
+  function _validateDelay(uint256 newDelay) private pure {
+    if (newDelay < MINIMUM_DELAY || newDelay > MAXIMUM_DELAY) revert InvalidDelay(newDelay);
+  }
+
+  function _validateAction(address target, bytes calldata data) private view {
+    if (target == address(this)) {
+      // every allowed function takes exactly one static ABI word
+      if (data.length != 36) revert InvalidSelfCall();
+      bytes4 selector = bytes4(data[:4]);
+      uint256 arg = uint256(bytes32(data[4:36]));
+      if (selector == this.setDelay.selector) {
+        _validateDelay(arg);
+      } else if (selector == this.transferOwnership.selector) {
+        if (arg >> 160 != 0) revert InvalidSelfCall();
+        if (address(uint160(arg)) == address(this)) revert InvalidOwner();
+      } else if (selector == this.setEmergencyEnabled.selector) {
+        if (arg > 1) revert InvalidSelfCall();
+      } else {
+        revert InvalidSelfCall();
+      }
+    } else {
+      if (data.length != 0) revert PayloadDataNotEmpty();
+      if (target.code.length == 0) revert InvalidTarget(target);
+      if (_isDelegationDesignator(target)) revert DelegatedTarget(target);
+    }
+  }
+
+  /// @dev EIP-7702: a delegated EOA's code is the 23-byte designator `0xef0100 || address`.
+  function _isDelegationDesignator(address account) private view returns (bool isDesignator) {
+    assembly ('memory-safe') {
+      if eq(extcodesize(account), 23) {
+        extcodecopy(account, 0, 0, 3) // scratch space
+        isDesignator := eq(shr(232, mload(0)), 0xef0100)
+      }
+    }
+  }
+
+  /**
+   * @dev Delegatecalls `target.execute()` and reverts if any guarded storage slot changed.
+   * `stateBefore` lives on this frame's stack, out of the payload's reach.
+   */
+  function _guardedDelegatecall(address target) private {
+    bytes32 stateBefore = _governanceStateHash();
+    (bool success, bytes memory returnData) = target.delegatecall(
+      abi.encodeWithSignature('execute()')
+    );
+    if (!success) _bubbleRevert(returnData);
+    if (_governanceStateHash() != stateBefore) revert GovernanceStateModified();
+  }
+
+  /// @dev keccak256 over the raw words of slots [0, GOVERNANCE_SLOT_COUNT): every slot this
+  /// contract uses, including unused bytes and inactive queue entries.
+  function _governanceStateHash() private view returns (bytes32 stateHash) {
+    uint256 slotCount = GOVERNANCE_SLOT_COUNT;
+    assembly ('memory-safe') {
+      let ptr := mload(0x40)
+      for {
+        let i := 0
+      } lt(i, slotCount) {
+        i := add(i, 1)
+      } {
+        mstore(add(ptr, shl(5, i)), sload(i))
+      }
+      stateHash := keccak256(ptr, shl(5, slotCount))
+    }
+  }
+
+  function _indexOf(bytes32 txHash) private view returns (uint256) {
+    uint256 length = _queueLength;
+    for (uint256 i = 0; i < length; i++) {
+      if (_queue[i].txHash == txHash) return i;
+    }
+    return NOT_FOUND;
+  }
+
+  function _remove(uint256 index) private {
+    uint256 last = _queueLength - 1;
+    if (index != last) _queue[index] = _queue[last];
+    delete _queue[last];
+    _queueLength = last;
+  }
+
+  function _bubbleRevert(bytes memory returnData) private pure {
+    assembly ('memory-safe') {
+      revert(add(returnData, 0x20), mload(returnData))
+    }
   }
 }
