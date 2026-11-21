@@ -37,7 +37,7 @@ jobs:
       - uses: oven-sh/setup-bun@8f24390df009a496891208e5e36b8a1de1f45135
 
       - name: Install Foundry
-        uses: foundry-rs/foundry-toolchain@8f1998e9878d786675189ef566a2e4bf24869773
+        uses: foundry-rs/foundry-toolchain@dba66c27052e63476d886f22216e119ba7e615bf
         with:
           version: v1.3.5
 
