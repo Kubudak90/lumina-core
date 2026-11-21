@@ -18,7 +18,7 @@
   "homepage": "https://github.com/Kubudak90/lumina-core#readme",
   "type": "module",
   "devDependencies": {
-    "prettier": "^2.8.3",
+    "prettier": "^3.10.1",
     "prettier-plugin-solidity": "^1.1.1"
   },
   "dependencies": {
