@@ -67,10 +67,7 @@ contract DiffUtils is Test {
     versionCmd[1] = '-p';
     versionCmd[2] = "require('./node_modules/@bgd-labs/aave-cli/package.json').version";
     Vm.FfiResult memory version = vm.tryFfi(versionCmd);
-    if (
-      version.exitCode != 0 ||
-      keccak256(version.stdout) != keccak256(bytes(AAVE_CLI_VERSION))
-    ) {
+    if (version.exitCode != 0 || keccak256(version.stdout) != keccak256(bytes(AAVE_CLI_VERSION))) {
       revert(
         string(
           abi.encodePacked(
