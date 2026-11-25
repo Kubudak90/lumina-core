@@ -539,7 +539,13 @@ contract DeployLighterDevnetTest is Test, LighterMarketInput {
   function test_F6_rejectsConfiguredEModeCategory() public {
     uint256 snap = vm.snapshotState();
     vm.prank(safe);
-    IPoolConfigurator(report.poolConfiguratorProxy).setEModeCategory(1, 90_00, 93_00, 102_00, 'ETH');
+    IPoolConfigurator(report.poolConfiguratorProxy).setEModeCategory(
+      1,
+      90_00,
+      93_00,
+      102_00,
+      'ETH'
+    );
     vm.expectRevert(bytes('final: eMode category configured: 1'));
     harness.exposed_assertFinalState();
 
@@ -580,8 +586,11 @@ contract DeployLighterDevnetTest is Test, LighterMarketInput {
     vm.prank(address(executor));
     AaveOracle(report.aaveOracle).setAssetSources(assets, sources);
 
-    ConfiguratorInputTypes.InitReserveInput[] memory init = new ConfiguratorInputTypes.InitReserveInput[](1);
-    DataTypes.ReserveDataLegacy memory wethRd = IPool(report.poolProxy).getReserveData(LIGHTER_WETH9);
+    ConfiguratorInputTypes.InitReserveInput[]
+      memory init = new ConfiguratorInputTypes.InitReserveInput[](1);
+    DataTypes.ReserveDataLegacy memory wethRd = IPool(report.poolProxy).getReserveData(
+      LIGHTER_WETH9
+    );
     bytes32 implSlot = 0x360894a13ba1a3210667c828492db98dca3e2076cc3735a920a3ca505d382bbc;
     init[0] = ConfiguratorInputTypes.InitReserveInput({
       aTokenImpl: address(uint160(uint256(vm.load(wethRd.aTokenAddress, implSlot)))),
@@ -688,7 +697,10 @@ contract DeployLighterDevnetTest is Test, LighterMarketInput {
     address[] memory poolAdmins = vm.parseJsonAddressArray(rolesJson, '.acl.POOL_ADMIN');
     address[] memory riskAdmins = vm.parseJsonAddressArray(rolesJson, '.acl.RISK_ADMIN');
     address[] memory emergencyAdmins = vm.parseJsonAddressArray(rolesJson, '.acl.EMERGENCY_ADMIN');
-    address[] memory listingAdmins = vm.parseJsonAddressArray(rolesJson, '.acl.ASSET_LISTING_ADMIN');
+    address[] memory listingAdmins = vm.parseJsonAddressArray(
+      rolesJson,
+      '.acl.ASSET_LISTING_ADMIN'
+    );
     assertEq(poolAdmins.length, 1);
     assertEq(poolAdmins[0], address(executor));
     assertEq(riskAdmins.length, 2);

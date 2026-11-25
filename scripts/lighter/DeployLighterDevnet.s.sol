@@ -830,7 +830,10 @@ contract DeployLighterDevnet is LighterManifest, LighterMarketInput {
     require(((cfg >> 64) & 0xffff) == p.reserveFactor, string.concat(p.symbol, ': reserve factor'));
     uint256 borrowCap = (cfg >> 80) & ((1 << 36) - 1);
     uint256 supplyCap = (cfg >> 116) & ((1 << 36) - 1);
-    require(supplyCap == p.supplyCap && borrowCap == p.borrowCap, string.concat(p.symbol, ': launch caps'));
+    require(
+      supplyCap == p.supplyCap && borrowCap == p.borrowCap,
+      string.concat(p.symbol, ': launch caps')
+    );
     require(
       ((cfg >> 152) & 0xffff) == p.liqProtocolFee,
       string.concat(p.symbol, ': liquidation protocol fee')
@@ -1317,7 +1320,10 @@ contract DeployLighterDevnet is LighterManifest, LighterMarketInput {
       }
     }
     require(foundProvider && foundPool, 'final: PoolConfigurator storageLayout missing slots');
-    require(providerOffset <= 12 && poolOffset <= 12, 'final: PoolConfigurator storageLayout offset');
+    require(
+      providerOffset <= 12 && poolOffset <= 12,
+      'final: PoolConfigurator storageLayout offset'
+    );
     address storedProvider = address(
       uint160(uint256(vm.load(_m.configurator, bytes32(providerSlot))) >> (providerOffset * 8))
     );
