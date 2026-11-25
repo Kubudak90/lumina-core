@@ -16,7 +16,9 @@ import {PoolConfiguratorInstance} from '../../src/contracts/instances/PoolConfig
 import {IOwnable} from 'solidity-utils/contracts/transparent-proxy/interfaces/IOwnable.sol';
 import {IERC20} from '../../src/contracts/dependencies/openzeppelin/contracts/IERC20.sol';
 import {DataTypes} from '../../src/contracts/protocol/libraries/types/DataTypes.sol';
+import {IPool} from '../../src/contracts/interfaces/IPool.sol';
 import {IDefaultInterestRateStrategyV2} from '../../src/contracts/interfaces/IDefaultInterestRateStrategyV2.sol';
+import {WrappedTokenGatewayV3} from '../../src/contracts/helpers/WrappedTokenGatewayV3.sol';
 
 interface ILighterCoreSourceView {
   function MARKET_ID() external view returns (uint16);
@@ -1156,6 +1158,7 @@ contract DeployLighterDevnet is LighterManifest, LighterMarketInput {
     );
     _checkNoEModeCategories();
     _checkBackPointers();
+    _checkWrappedTokenGateway();
     _checkMulticall3();
 
     // Wiring invariant (plan.md): one LighterCorePriceSource behind guard market 0, the AaveOracle
@@ -1358,10 +1361,6 @@ contract DeployLighterDevnet is LighterManifest, LighterMarketInput {
       IEmissionManagerView(_m.emissionManager).getRewardsController() == rewards,
       'final: EmissionManager rewards'
     );
-    require(
-      IGatewayView(_m.gateway).getWETHAddress() == LIGHTER_WETH9,
-      'final: WrappedTokenGateway WETH'
-    );
     address factory = _requireDeployed('.contracts.staticATokenFactory.address');
     address stataImpl = _requireDeployed('.contracts.staticATokenImplementation.address');
     require(
@@ -1402,6 +1401,23 @@ contract DeployLighterDevnet is LighterManifest, LighterMarketInput {
         ui.marketReferenceCurrencyPriceInUsdProxyAggregator() == _in.usdcSource,
       'final: UiPoolDataProvider aggregators'
     );
+  }
+
+  /// @dev F6 phase 1 (b3): verify WrappedTokenGatewayV3 binds both WETH and Pool immutables
+  /// without broadcasting, by constructing an expected instance inside a reverted simulation
+  /// snapshot and comparing runtime code hashes.
+  function _checkWrappedTokenGateway() internal {
+    require(
+      IGatewayView(_m.gateway).getWETHAddress() == LIGHTER_WETH9,
+      'final: WrappedTokenGateway WETH'
+    );
+    uint256 snap = vm.snapshotState();
+    address expected = address(
+      new WrappedTokenGatewayV3(LIGHTER_WETH9, _m.executor, IPool(_m.pool))
+    );
+    bytes32 expectedHash = expected.codehash;
+    vm.revertToState(snap);
+    require(_m.gateway.codehash == expectedHash, 'final: WrappedTokenGateway Pool binding');
   }
 
   /// @dev F6 phase 1: Multicall3 canonical runtime codehash and aggregate3 probe.

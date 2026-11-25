@@ -650,6 +650,33 @@ contract DeployLighterDevnetTest is Test, LighterMarketInput {
     harness.exposed_assertFinalState();
   }
 
+  function test_F6_rejectsWrappedTokenGatewayForAnotherPool() public {
+    address otherPool = report.poolConfiguratorProxy;
+    address rogueGateway = address(
+      new WrappedTokenGatewayV3(LIGHTER_WETH9, address(executor), IPool(otherPool))
+    );
+    DeployLighterDevnet.Market memory bad = DeployLighterDevnet.Market({
+      provider: report.poolAddressesProvider,
+      registry: report.poolAddressesProviderRegistry,
+      aclManager: report.aclManager,
+      pool: report.poolProxy,
+      configurator: report.poolConfiguratorProxy,
+      aaveOracle: report.aaveOracle,
+      dataProvider: report.protocolDataProvider,
+      rateStrategy: report.defaultInterestRateStrategy,
+      configEngine: report.configEngine,
+      emissionManager: report.emissionManager,
+      proxyAdmin: report.proxyAdmin,
+      gateway: rogueGateway,
+      setupBatch: setupBatch,
+      executor: address(executor),
+      listingPayload: address(listing)
+    });
+    harness.setMarket(bad);
+    vm.expectRevert(bytes('final: WrappedTokenGateway Pool binding'));
+    harness.exposed_assertFinalState();
+  }
+
   // ------------------------------------------------------------------------------- Manifest writer tests
 
   function test_F1_F6_manifestWriterEmitsCommittedInputsAndNewRoles() public {
