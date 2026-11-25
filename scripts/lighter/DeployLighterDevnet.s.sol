@@ -106,6 +106,8 @@ interface IProviderAdmin {
 }
 
 interface IACL {
+  function ADDRESSES_PROVIDER() external view returns (address);
+
   function DEFAULT_ADMIN_ROLE() external view returns (bytes32);
 
   function POOL_ADMIN_ROLE() external view returns (bytes32);
@@ -122,6 +124,8 @@ interface IACL {
 
   function hasRole(bytes32 role, address account) external view returns (bool);
 
+  function getRoleAdmin(bytes32 role) external view returns (bytes32);
+
   function grantRole(bytes32 role, address account) external;
 
   function revokeRole(bytes32 role, address account) external;
@@ -130,14 +134,34 @@ interface IACL {
 }
 
 interface IPoolView {
+  function ADDRESSES_PROVIDER() external view returns (address);
+
+  function getReservesList() external view returns (address[] memory);
+
   function getReserveData(address asset) external view returns (DataTypes.ReserveDataLegacy memory);
 
   function getReserveNormalizedIncome(address asset) external view returns (uint256);
+
+  function getLiquidationGracePeriod(address asset) external view returns (uint40);
+
+  function getEModeCategoryCollateralConfig(
+    uint8 id
+  ) external view returns (DataTypes.CollateralConfig memory);
+
+  function getEModeCategoryCollateralBitmap(uint8 id) external view returns (uint128);
+
+  function getEModeCategoryBorrowableBitmap(uint8 id) external view returns (uint128);
+
+  function getEModeCategoryLabel(uint8 id) external view returns (string memory);
 
   function supply(address asset, uint256 amount, address onBehalfOf, uint16 referralCode) external;
 }
 
 interface IAaveOracleAdmin {
+  function ADDRESSES_PROVIDER() external view returns (address);
+
+  function getFallbackOracle() external view returns (address);
+
   function getSourceOfAsset(address asset) external view returns (address);
 
   function setAssetSources(address[] calldata assets, address[] calldata sources) external;
@@ -148,6 +172,8 @@ interface IAaveOracleAdmin {
 }
 
 interface IDataProviderView {
+  function ADDRESSES_PROVIDER() external view returns (address);
+
   function getReserveConfigurationData(
     address asset
   )
@@ -162,6 +188,73 @@ interface IDataProviderView {
   function getLiquidationProtocolFee(address asset) external view returns (uint256);
 
   function getFlashLoanEnabled(address asset) external view returns (bool);
+}
+
+interface IProviderRefView {
+  function ADDRESSES_PROVIDER() external view returns (address);
+}
+
+interface IReserveTokenView {
+  function POOL() external view returns (address);
+
+  function UNDERLYING_ASSET_ADDRESS() external view returns (address);
+
+  function RESERVE_TREASURY_ADDRESS() external view returns (address);
+
+  function getIncentivesController() external view returns (address);
+}
+
+interface IRewardsView {
+  function EMISSION_MANAGER() external view returns (address);
+}
+
+interface IEmissionManagerView {
+  function getRewardsController() external view returns (address);
+}
+
+interface IGatewayView {
+  function getWETHAddress() external view returns (address);
+}
+
+interface IStataFactoryView {
+  function POOL() external view returns (address);
+
+  function PROXY_ADMIN() external view returns (address);
+
+  function STATA_TOKEN_IMPL() external view returns (address);
+}
+
+interface IStataImplView {
+  function POOL() external view returns (address);
+
+  function POOL_ADDRESSES_PROVIDER() external view returns (address);
+
+  function INCENTIVES_CONTROLLER() external view returns (address);
+}
+
+interface IUiPoolDataProviderView {
+  function networkBaseTokenPriceInUsdProxyAggregator() external view returns (address);
+
+  function marketReferenceCurrencyPriceInUsdProxyAggregator() external view returns (address);
+}
+
+interface IMulticall3View {
+  struct Call3 {
+    address target;
+    bool allowFailure;
+    bytes callData;
+  }
+
+  struct Result {
+    bool success;
+    bytes returnData;
+  }
+
+  function aggregate3(Call3[] calldata calls) external view returns (Result[] memory returnData);
+
+  function getChainId() external view returns (uint256);
+
+  function getBlockNumber() external view returns (uint256);
 }
 
 interface IScaledBalance {
@@ -201,11 +294,14 @@ interface IImmutableAdminProxy {
  * Every phase checks chain state first: a re-run after success sends nothing and leaves
  * `sourceCommits` as recorded; a phase that sends continues only from the recorded commit.
  *
- * Role layout after handOver (spec 3.4, CORE-02, plan.md S4a notes):
- *  - Executor: PoolAddressesProvider owner, ACL admin, ACL DEFAULT_ADMIN; POOL_ADMIN and RISK_ADMIN
- *    (config-engine payloads queued through the timelock); owner of the PoolAddressesProviderRegistry,
+ * Role layout after handOver (spec 3.4, CORE-02, audit-fixes-v1 F1):
+ *  - Executor: PoolAddressesProvider owner, ACL admin, ACL DEFAULT_ADMIN, POOL_ADMIN, RISK_ADMIN
+ *    (upgrades, oracle sources, reserve listing/removal, ACL changes, and config-engine payloads
+ *    queued through the 1-day timelock); owner of the PoolAddressesProviderRegistry,
  *    EmissionManager, ProxyAdmin, WrappedTokenGateway and the market setup batch.
- *  - Safe: POOL_ADMIN, RISK_ADMIN, EMERGENCY_ADMIN, ASSET_LISTING_ADMIN; Executor owner; treasury.
+ *  - Safe: RISK_ADMIN and EMERGENCY_ADMIN only (neither POOL_ADMIN nor ASSET_LISTING_ADMIN);
+ *    Executor owner; treasury.
+ *  - ASSET_LISTING_ADMIN, FLASH_BORROWER, BRIDGE: empty.
  *  - Deployer: nothing.
  *
  * Usage (lumina-monorepo harness/deploy/README.md):
@@ -230,6 +326,8 @@ contract DeployLighterDevnet is LighterManifest, LighterMarketInput {
     0xbba688fbdb21ad2bb58bc320638b43d94e7d100f6f3ebaab0a4e4de6304b1c2e;
   bytes32 internal constant SAFE_FALLBACK_HANDLER_HASH =
     0x03e69f7ce809e81687c69b19a7d7cca45b6d551ffdec73d9bb87178476de1abf;
+  bytes32 internal constant MULTICALL3_CODEHASH =
+    0xd5c15df687b16f2ff992fc8d767b4216323184a2bbc6ee2f9c398c318e770891;
   /// @dev Aave's scaled-balance rounding: a supply of `amount` can read back as `amount - 1`.
   uint256 internal constant SEED_ROUNDING = 1;
   string internal constant LOGIC = 'src/contracts/protocol/libraries/logic/';
@@ -252,6 +350,7 @@ contract DeployLighterDevnet is LighterManifest, LighterMarketInput {
     address deployer;
     address safe;
     address keeper;
+    address multicall3;
     address ethSource;
     address usdcSource;
     address guard;
@@ -372,11 +471,8 @@ contract DeployLighterDevnet is LighterManifest, LighterMarketInput {
       _clearRoles(_m.listingPayload);
     }
 
-    // Until the listing is published in the manifest, the mined values must be the launch ones,
-    // also when an interrupted earlier run listed (r1#7).
-    bool firstSetup = _isNull(_market(_in.wethMarketIndex, 'aToken')) ||
-      _isNull(_market(_in.usdcMarketIndex, 'aToken'));
-    if (firstSetup) _requireManifestRiskMatchesInput();
+    // Manifest risk/rate/flag inputs must match LighterMarketInput on every run (F6).
+    _requireManifestRiskMatchesInput();
     if (!_listed()) {
       require(
         _m.listingPayload != address(0),
@@ -399,7 +495,7 @@ contract DeployLighterDevnet is LighterManifest, LighterMarketInput {
     } else {
       console.log('listAndSeed: reserves already listed');
     }
-    if (firstSetup) _checkLaunchValues();
+    _checkCoreReserves();
     _checkReserveWiring();
     _topUpSeeds();
     _writeReserves();
@@ -447,6 +543,7 @@ contract DeployLighterDevnet is LighterManifest, LighterMarketInput {
     _checkExecutor(true);
     _verifyProbe();
     if (_m.listingPayload != address(0)) _clearRoles(_m.listingPayload);
+    _requireManifestRiskMatchesInput();
     _checkReserveWiring();
     _requireSeeds();
 
@@ -661,55 +758,100 @@ contract DeployLighterDevnet is LighterManifest, LighterMarketInput {
     ];
   }
 
-  /// @dev First setup only: the manifest must not encode other risk parameters than the input.
+  /// @dev Committed manifest risk/flag/rate fields must match LighterMarketInput (F6).
   function _requireManifestRiskMatchesInput() internal view {
     LighterReserveParams[] memory params = _lighterReserveParams();
     for (uint256 k = 0; k < 2; k++) {
       LighterReserveParams memory p = params[k];
       uint256 i = p.asset == LIGHTER_WETH9 ? _in.wethMarketIndex : _in.usdcMarketIndex;
+      bool ok = _uint(_market(i, 'ltvBps')) == p.ltv &&
+        _uint(_market(i, 'liquidationThresholdBps')) == p.liqThreshold &&
+        _uint(_market(i, 'liquidationBonusBps')) == p.liqBonus &&
+        _uint(_market(i, 'liquidationProtocolFeeBps')) == p.liqProtocolFee &&
+        _uint(_market(i, 'reserveFactorBps')) == p.reserveFactor &&
+        _uint(_market(i, 'debtCeiling')) == 0 &&
+        _bool(_market(i, 'active')) &&
+        !_bool(_market(i, 'frozen')) &&
+        !_bool(_market(i, 'paused')) &&
+        _bool(_market(i, 'borrowingEnabled')) &&
+        !_bool(_market(i, 'flashLoanEnabled')) &&
+        _uint(_market(i, 'optimalUsageRatioBps')) == p.rates.optimalUsageRatio &&
+        _uint(_market(i, 'baseVariableBorrowRateBps')) == p.rates.baseVariableBorrowRate &&
+        _uint(_market(i, 'variableRateSlope1Bps')) == p.rates.variableRateSlope1 &&
+        _uint(_market(i, 'variableRateSlope2Bps')) == p.rates.variableRateSlope2;
+      if (!_isNull(_market(i, 'supplyCap'))) {
+        ok = ok && _uint(_market(i, 'supplyCap')) == p.supplyCap;
+      }
+      if (!_isNull(_market(i, 'borrowCap'))) {
+        ok = ok && _uint(_market(i, 'borrowCap')) == p.borrowCap;
+      }
       require(
-        _uint(_market(i, 'ltvBps')) == p.ltv &&
-          _uint(_market(i, 'liquidationThresholdBps')) == p.liqThreshold &&
-          _uint(_market(i, 'liquidationBonusBps')) == p.liqBonus &&
-          _uint(_market(i, 'reserveFactorBps')) == p.reserveFactor,
+        ok,
         string.concat('manifest markets.core ', p.symbol, ' differs from LighterMarketInput')
       );
     }
   }
 
-  /// @dev First setup only (#7): every launch value read back equals LighterMarketInput.
-  function _checkLaunchValues() internal view {
+  /// @dev F6 phase 1: exact reserves list, decoded ReserveConfigurationMap (LTV/LT/LB/decimals/
+  /// flags/RF/caps/liqProtocolFee/debtCeiling), rate strategy + 4 bps params, and no pending grace.
+  function _checkCoreReserves() internal view {
+    address[] memory list = IPoolView(_m.pool).getReservesList();
+    require(list.length == 2, 'final: reserves list length');
+    require(
+      (list[0] == LIGHTER_WETH9 && list[1] == LIGHTER_USDC) ||
+        (list[0] == LIGHTER_USDC && list[1] == LIGHTER_WETH9),
+      'final: reserves list mismatch'
+    );
     LighterReserveParams[] memory params = _lighterReserveParams();
-    IDataProviderView dp = IDataProviderView(_m.dataProvider);
     for (uint256 i = 0; i < params.length; i++) {
-      LighterReserveParams memory p = params[i];
-      ReserveConfig memory c = _reserveConfig(p.asset);
-      require(c.decimals == p.decimals, string.concat(p.symbol, ': decimals'));
-      require(c.ltv == p.ltv && c.lt == p.liqThreshold, string.concat(p.symbol, ': ltv / LT'));
-      require(c.lb == 100_00 + p.liqBonus, string.concat(p.symbol, ': liquidation bonus'));
-      require(c.rf == p.reserveFactor, string.concat(p.symbol, ': reserve factor'));
-      require(c.borrowing && c.collateral, string.concat(p.symbol, ': borrowing / collateral'));
-      require(
-        dp.getLiquidationProtocolFee(p.asset) == p.liqProtocolFee,
-        string.concat(p.symbol, ': liquidation protocol fee')
-      );
-      require(!dp.getFlashLoanEnabled(p.asset), string.concat(p.symbol, ': flash loans enabled'));
-      (uint256 borrowCap, uint256 supplyCap) = dp.getReserveCaps(p.asset);
-      require(
-        supplyCap == p.supplyCap && borrowCap == p.borrowCap,
-        string.concat(p.symbol, ': launch caps')
-      );
-      IDefaultInterestRateStrategyV2.InterestRateData memory rate = IDefaultInterestRateStrategyV2(
-        _m.rateStrategy
-      ).getInterestRateDataBps(p.asset);
-      require(
-        rate.optimalUsageRatio == p.rates.optimalUsageRatio &&
-          rate.baseVariableBorrowRate == p.rates.baseVariableBorrowRate &&
-          rate.variableRateSlope1 == p.rates.variableRateSlope1 &&
-          rate.variableRateSlope2 == p.rates.variableRateSlope2,
-        string.concat(p.symbol, ': launch interest rate curve')
-      );
+      _checkOneCoreReserve(params[i]);
     }
+  }
+
+  function _checkOneCoreReserve(LighterReserveParams memory p) internal view {
+    DataTypes.ReserveDataLegacy memory rd = IPoolView(_m.pool).getReserveData(p.asset);
+    uint256 cfg = rd.configuration.data;
+    require((cfg & 0xffff) == p.ltv, string.concat(p.symbol, ': ltv / LT'));
+    require(((cfg >> 16) & 0xffff) == p.liqThreshold, string.concat(p.symbol, ': ltv / LT'));
+    require(
+      ((cfg >> 32) & 0xffff) == 100_00 + p.liqBonus,
+      string.concat(p.symbol, ': liquidation bonus')
+    );
+    require(((cfg >> 48) & 0xff) == p.decimals, string.concat(p.symbol, ': decimals'));
+    require(((cfg >> 56) & 1) == 1, string.concat(p.symbol, ': not active'));
+    require(((cfg >> 57) & 1) == 0, string.concat(p.symbol, ': frozen'));
+    require(((cfg >> 58) & 1) == 1, string.concat(p.symbol, ': borrowing disabled'));
+    require(((cfg >> 60) & 1) == 0, string.concat(p.symbol, ': paused'));
+    require(((cfg >> 61) & 1) == 0, string.concat(p.symbol, ': borrowable in isolation'));
+    require(((cfg >> 62) & 1) == 0, string.concat(p.symbol, ': siloed borrowing'));
+    require(((cfg >> 63) & 1) == 0, string.concat(p.symbol, ': flash loans enabled'));
+    require(((cfg >> 64) & 0xffff) == p.reserveFactor, string.concat(p.symbol, ': reserve factor'));
+    uint256 borrowCap = (cfg >> 80) & ((1 << 36) - 1);
+    uint256 supplyCap = (cfg >> 116) & ((1 << 36) - 1);
+    require(supplyCap == p.supplyCap && borrowCap == p.borrowCap, string.concat(p.symbol, ': launch caps'));
+    require(
+      ((cfg >> 152) & 0xffff) == p.liqProtocolFee,
+      string.concat(p.symbol, ': liquidation protocol fee')
+    );
+    require(((cfg >> 212) & ((1 << 40) - 1)) == 0, string.concat(p.symbol, ': debt ceiling'));
+    require(
+      rd.interestRateStrategyAddress == _m.rateStrategy,
+      string.concat(p.symbol, ': rate strategy')
+    );
+    IDefaultInterestRateStrategyV2.InterestRateData memory rate = IDefaultInterestRateStrategyV2(
+      _m.rateStrategy
+    ).getInterestRateDataBps(p.asset);
+    require(
+      rate.optimalUsageRatio == p.rates.optimalUsageRatio &&
+        rate.baseVariableBorrowRate == p.rates.baseVariableBorrowRate &&
+        rate.variableRateSlope1 == p.rates.variableRateSlope1 &&
+        rate.variableRateSlope2 == p.rates.variableRateSlope2,
+      string.concat(p.symbol, ': launch interest rate curve')
+    );
+    require(
+      IPoolView(_m.pool).getLiquidationGracePeriod(p.asset) < block.timestamp,
+      string.concat(p.symbol, ': pending liquidation grace period')
+    );
   }
 
   /// @dev Every run: sources, treasury, rate strategy, active and unfrozen (not the tunables).
@@ -927,14 +1069,16 @@ contract DeployLighterDevnet is LighterManifest, LighterMarketInput {
     address exec = _m.executor;
     address safe = _in.safe;
     bytes32[7] memory roles = _allRoles(acl);
-    // ACL: every target role is granted before anything is revoked.
+    // ACL (F1): every target role is granted before anything is revoked.
+    // Safe holds RISK_ADMIN and EMERGENCY_ADMIN only; Executor holds DEFAULT_ADMIN, POOL_ADMIN, RISK_ADMIN.
     _grant(acl, roles[0], exec); // DEFAULT_ADMIN
-    _grant(acl, roles[1], safe); // POOL_ADMIN
-    _grant(acl, roles[1], exec);
+    _grant(acl, roles[1], exec); // POOL_ADMIN (Executor only; behind 1-day delay)
     _grant(acl, roles[3], safe); // RISK_ADMIN
     _grant(acl, roles[3], exec);
     _grant(acl, roles[2], safe); // EMERGENCY_ADMIN
-    _grant(acl, roles[6], safe); // ASSET_LISTING_ADMIN
+    // Interrupted pre-F1 handover edge case: strip POOL_ADMIN / ASSET_LISTING_ADMIN if Safe holds them.
+    _revokeIfHeld(acl, roles[1], safe);
+    _revokeIfHeld(acl, roles[6], safe);
 
     // PoolAddressesProvider: ACL admin first (owner-only), then ownership.
     IProviderAdmin provider = IProviderAdmin(_m.provider);
@@ -959,6 +1103,17 @@ contract DeployLighterDevnet is LighterManifest, LighterMarketInput {
     );
     _startBroadcast();
     acl.grantRole(role, account);
+    vm.stopBroadcast();
+  }
+
+  function _revokeIfHeld(IACL acl, bytes32 role, address account) internal {
+    if (!acl.hasRole(role, account)) return;
+    require(
+      acl.hasRole(acl.DEFAULT_ADMIN_ROLE(), _in.deployer),
+      'handOver: an unwanted role is held and the deployer is no longer ACL admin'
+    );
+    _startBroadcast();
+    acl.revokeRole(role, account);
     vm.stopBroadcast();
   }
 
@@ -990,20 +1145,61 @@ contract DeployLighterDevnet is LighterManifest, LighterMarketInput {
     vm.stopBroadcast();
   }
 
-  /// @dev Roles, exact owners and proxy admins (#5), and the wiring invariant.
+  /// @dev Roles (F1), exact owners and proxy admins (#5), F6 phase 1 core state, back-pointers,
+  /// Multicall3, wiring invariant and seeds.
   function _assertFinalState() internal {
+    _assertFinalRolesAndAdmins();
+    _checkCoreReserves();
+    require(
+      IAaveOracleAdmin(_m.aaveOracle).getFallbackOracle() == address(0),
+      'final: fallback oracle'
+    );
+    _checkNoEModeCategories();
+    _checkBackPointers();
+    _checkMulticall3();
+
+    // Wiring invariant (plan.md): one LighterCorePriceSource behind guard market 0, the AaveOracle
+    // WETH source and the WETH side of both dual oracles.
+    (bool guarded, address guardSource, , , , , ) = IPriceGuardView(_in.guard).getMarket(0);
+    require(guarded && guardSource == _in.ethSource, 'final: guard market 0 source');
+    require(
+      IAaveOracleAdmin(_m.aaveOracle).getSourceOfAsset(LIGHTER_WETH9) == _in.ethSource,
+      'final: AaveOracle WETH source'
+    );
+    require(
+      IDualOracleView(_in.dualUsdcWeth).COLLATERAL_PRICE_SOURCE() == _in.ethSource &&
+        IDualOracleView(_in.dualWethUsdc).ASSET_PRICE_SOURCE() == _in.ethSource,
+      'final: dual oracle ETH source'
+    );
+    _requireSeeds();
+  }
+
+  function _assertFinalRolesAndAdmins() internal {
     IACL acl = IACL(_m.aclManager);
     address exec = _m.executor;
     address safe = _in.safe;
     bytes32[7] memory roles = _allRoles(acl);
     _requireNoRole(_in.deployer, 'the deployer');
     if (_m.listingPayload != address(0)) _requireNoRole(_m.listingPayload, 'the listing payload');
+    if (bytes(_json).length > 0 && vm.keyExistsJson(_json, '.compromised')) {
+      address[] memory compromised = vm.parseJsonAddressArray(_json, '.compromised');
+      for (uint256 i = 0; i < compromised.length; i++) {
+        _requireNoRole(compromised[i], 'compromised account');
+      }
+    }
+    for (uint256 i = 0; i < roles.length; i++) {
+      require(acl.getRoleAdmin(roles[i]) == roles[0], 'final: role admin is not DEFAULT_ADMIN');
+    }
+    // F1 ACL layout: DEFAULT_ADMIN [Executor]; POOL_ADMIN [Executor]; EMERGENCY_ADMIN [Safe];
+    // RISK_ADMIN [Safe, Executor]; FLASH_BORROWER []; BRIDGE []; ASSET_LISTING_ADMIN [].
     require(acl.hasRole(roles[0], exec) && !acl.hasRole(roles[0], safe), 'final: DEFAULT_ADMIN');
-    require(acl.hasRole(roles[1], safe) && acl.hasRole(roles[1], exec), 'final: POOL_ADMIN');
+    require(!acl.hasRole(roles[1], safe) && acl.hasRole(roles[1], exec), 'final: POOL_ADMIN');
     require(acl.hasRole(roles[2], safe) && !acl.hasRole(roles[2], exec), 'final: EMERGENCY_ADMIN');
     require(acl.hasRole(roles[3], safe) && acl.hasRole(roles[3], exec), 'final: RISK_ADMIN');
+    require(!acl.hasRole(roles[4], safe) && !acl.hasRole(roles[4], exec), 'final: FLASH_BORROWER');
+    require(!acl.hasRole(roles[5], safe) && !acl.hasRole(roles[5], exec), 'final: BRIDGE');
     require(
-      acl.hasRole(roles[6], safe) && !acl.hasRole(roles[6], exec),
+      !acl.hasRole(roles[6], safe) && !acl.hasRole(roles[6], exec),
       'final: ASSET_LISTING_ADMIN'
     );
 
@@ -1038,21 +1234,198 @@ contract DeployLighterDevnet is LighterManifest, LighterMarketInput {
       address(uint160(uint256(vm.load(factory, EIP1967_ADMIN_SLOT)))) == _m.proxyAdmin,
       'final: StataTokenFactory proxy admin is not the ProxyAdmin'
     );
+  }
 
-    // Wiring invariant (plan.md): one LighterCorePriceSource behind guard market 0, the AaveOracle
-    // WETH source and the WETH side of both dual oracles.
-    (bool guarded, address guardSource, , , , , ) = IPriceGuardView(_in.guard).getMarket(0);
-    require(guarded && guardSource == _in.ethSource, 'final: guard market 0 source');
+  /// @dev F6 phase 1: eMode categories 1..255 must all be unconfigured.
+  function _checkNoEModeCategories() internal view {
+    IPoolView pool = IPoolView(_m.pool);
+    for (uint256 id = 1; id <= 255; id++) {
+      uint8 cat = uint8(id);
+      DataTypes.CollateralConfig memory cfg = pool.getEModeCategoryCollateralConfig(cat);
+      require(
+        cfg.ltv == 0 &&
+          cfg.liquidationThreshold == 0 &&
+          cfg.liquidationBonus == 0 &&
+          pool.getEModeCategoryCollateralBitmap(cat) == 0 &&
+          pool.getEModeCategoryBorrowableBitmap(cat) == 0 &&
+          bytes(pool.getEModeCategoryLabel(cat)).length == 0,
+        string.concat('final: eMode category configured: ', vm.toString(id))
+      );
+    }
+  }
+
+  /// @dev F6 phase 1: every core, reserve token, guard and periphery back-pointer, plus
+  /// PoolConfigurator proxy storage slots derived from the compiler's storageLayout.
+  function _checkBackPointers() internal view {
+    require(IPoolView(_m.pool).ADDRESSES_PROVIDER() == _m.provider, 'final: Pool provider');
     require(
-      IAaveOracleAdmin(_m.aaveOracle).getSourceOfAsset(LIGHTER_WETH9) == _in.ethSource,
-      'final: AaveOracle WETH source'
+      IPoolView(_implementationOf(_m.pool)).ADDRESSES_PROVIDER() == _m.provider,
+      'final: Pool impl provider'
+    );
+    require(IACL(_m.aclManager).ADDRESSES_PROVIDER() == _m.provider, 'final: ACLManager provider');
+    require(
+      IAaveOracleAdmin(_m.aaveOracle).ADDRESSES_PROVIDER() == _m.provider,
+      'final: AaveOracle provider'
     );
     require(
-      IDualOracleView(_in.dualUsdcWeth).COLLATERAL_PRICE_SOURCE() == _in.ethSource &&
-        IDualOracleView(_in.dualWethUsdc).ASSET_PRICE_SOURCE() == _in.ethSource,
-      'final: dual oracle ETH source'
+      IDataProviderView(_m.dataProvider).ADDRESSES_PROVIDER() == _m.provider,
+      'final: PoolDataProvider provider'
     );
-    _requireSeeds();
+    require(
+      IProviderAdmin(_m.provider).getPoolDataProvider() == _m.dataProvider,
+      'final: provider dataProvider'
+    );
+    require(
+      IProviderRefView(_m.rateStrategy).ADDRESSES_PROVIDER() == _m.provider,
+      'final: rateStrategy provider'
+    );
+    require(
+      IPriceGuardView(_in.guard).ADDRESSES_PROVIDER() == _m.provider,
+      'final: guard provider'
+    );
+    _checkConfiguratorStorage();
+    _checkReserveAndPeripheryBackPointers();
+  }
+
+  /// @dev Derives `_addressesProvider` and `_pool` slots from PoolConfiguratorInstance's compiled
+  /// storageLayout artifact and verifies the proxy's storage matches the manifest.
+  function _checkConfiguratorStorage() internal view {
+    string memory art = vm.readFile(
+      'out/PoolConfiguratorInstance.sol/PoolConfiguratorInstance.json'
+    );
+    bool foundProvider;
+    bool foundPool;
+    uint256 providerSlot;
+    uint256 providerOffset;
+    uint256 poolSlot;
+    uint256 poolOffset;
+    for (uint256 i = 0; ; i++) {
+      string memory base = string.concat('.storageLayout.storage[', vm.toString(i), ']');
+      if (!vm.keyExistsJson(art, string.concat(base, '.label'))) break;
+      bytes32 labelHash = keccak256(bytes(vm.parseJsonString(art, string.concat(base, '.label'))));
+      if (labelHash == keccak256('_addressesProvider')) {
+        providerSlot = vm.parseUint(vm.parseJsonString(art, string.concat(base, '.slot')));
+        providerOffset = vm.parseJsonUint(art, string.concat(base, '.offset'));
+        foundProvider = true;
+      } else if (labelHash == keccak256('_pool')) {
+        poolSlot = vm.parseUint(vm.parseJsonString(art, string.concat(base, '.slot')));
+        poolOffset = vm.parseJsonUint(art, string.concat(base, '.offset'));
+        foundPool = true;
+      }
+    }
+    require(foundProvider && foundPool, 'final: PoolConfigurator storageLayout missing slots');
+    require(providerOffset <= 12 && poolOffset <= 12, 'final: PoolConfigurator storageLayout offset');
+    address storedProvider = address(
+      uint160(uint256(vm.load(_m.configurator, bytes32(providerSlot))) >> (providerOffset * 8))
+    );
+    address storedPool = address(
+      uint160(uint256(vm.load(_m.configurator, bytes32(poolSlot))) >> (poolOffset * 8))
+    );
+    require(storedProvider == _m.provider, 'final: PoolConfigurator _addressesProvider');
+    require(storedPool == _m.pool, 'final: PoolConfigurator _pool');
+  }
+
+  function _checkReserveAndPeripheryBackPointers() internal view {
+    address rewards = _requireDeployed('.contracts.rewardsController.address');
+    for (uint256 i = 0; i < 2; i++) {
+      address asset = i == 0 ? LIGHTER_WETH9 : LIGHTER_USDC;
+      DataTypes.ReserveDataLegacy memory rd = IPoolView(_m.pool).getReserveData(asset);
+      IReserveTokenView aTok = IReserveTokenView(rd.aTokenAddress);
+      IReserveTokenView vTok = IReserveTokenView(rd.variableDebtTokenAddress);
+      require(aTok.POOL() == _m.pool, 'final: aToken POOL');
+      require(aTok.UNDERLYING_ASSET_ADDRESS() == asset, 'final: aToken underlying');
+      require(aTok.RESERVE_TREASURY_ADDRESS() == _in.safe, 'final: aToken treasury');
+      require(aTok.getIncentivesController() == rewards, 'final: aToken rewards');
+      require(
+        IReserveTokenView(_implementationOf(rd.aTokenAddress)).POOL() == _m.pool,
+        'final: aToken impl POOL'
+      );
+      require(vTok.POOL() == _m.pool, 'final: variableDebtToken POOL');
+      require(vTok.UNDERLYING_ASSET_ADDRESS() == asset, 'final: variableDebtToken underlying');
+      require(vTok.getIncentivesController() == rewards, 'final: variableDebtToken rewards');
+      require(
+        IReserveTokenView(_implementationOf(rd.variableDebtTokenAddress)).POOL() == _m.pool,
+        'final: variableDebtToken impl POOL'
+      );
+    }
+
+    require(
+      IRewardsView(rewards).EMISSION_MANAGER() == _m.emissionManager &&
+        IRewardsView(_implementationOf(rewards)).EMISSION_MANAGER() == _m.emissionManager,
+      'final: RewardsController EMISSION_MANAGER'
+    );
+    require(
+      IEmissionManagerView(_m.emissionManager).getRewardsController() == rewards,
+      'final: EmissionManager rewards'
+    );
+    require(
+      IGatewayView(_m.gateway).getWETHAddress() == LIGHTER_WETH9,
+      'final: WrappedTokenGateway WETH'
+    );
+    address factory = _requireDeployed('.contracts.staticATokenFactory.address');
+    address stataImpl = _requireDeployed('.contracts.staticATokenImplementation.address');
+    require(
+      IStataFactoryView(factory).POOL() == _m.pool &&
+        IStataFactoryView(_implementationOf(factory)).POOL() == _m.pool &&
+        IStataFactoryView(factory).PROXY_ADMIN() == _m.proxyAdmin &&
+        IStataFactoryView(factory).STATA_TOKEN_IMPL() == stataImpl,
+      'final: StaticATokenFactory back-pointers'
+    );
+    require(
+      IStataImplView(stataImpl).POOL() == _m.pool &&
+        IStataImplView(stataImpl).POOL_ADDRESSES_PROVIDER() == _m.provider &&
+        IStataImplView(stataImpl).INCENTIVES_CONTROLLER() == rewards,
+      'final: StaticATokenImplementation back-pointers'
+    );
+    AaveV3ConfigEngine engine = AaveV3ConfigEngine(_m.configEngine);
+    require(
+      address(engine.POOL()) == _m.pool &&
+        address(engine.POOL_CONFIGURATOR()) == _m.configurator &&
+        address(engine.ORACLE()) == _m.aaveOracle &&
+        engine.COLLECTOR() == _in.safe &&
+        engine.DEFAULT_INTEREST_RATE_STRATEGY() == _m.rateStrategy &&
+        engine.REWARDS_CONTROLLER() == rewards,
+      'final: ConfigEngine back-pointers'
+    );
+    if (_m.listingPayload != address(0)) {
+      LighterListingPayload lp = LighterListingPayload(_m.listingPayload);
+      require(
+        address(lp.POOL()) == _m.pool && address(lp.CONFIG_ENGINE()) == _m.configEngine,
+        'final: ListingPayload back-pointers'
+      );
+    }
+    IUiPoolDataProviderView ui = IUiPoolDataProviderView(
+      _requireDeployed('.contracts.uiPoolDataProvider.address')
+    );
+    require(
+      ui.networkBaseTokenPriceInUsdProxyAggregator() == _in.ethSource &&
+        ui.marketReferenceCurrencyPriceInUsdProxyAggregator() == _in.usdcSource,
+      'final: UiPoolDataProvider aggregators'
+    );
+  }
+
+  /// @dev F6 phase 1: Multicall3 canonical runtime codehash and aggregate3 probe.
+  function _checkMulticall3() internal view {
+    address mc = _in.multicall3;
+    require(mc.codehash == MULTICALL3_CODEHASH, 'final: Multicall3 codehash');
+    IMulticall3View.Call3[] memory calls = new IMulticall3View.Call3[](2);
+    calls[0] = IMulticall3View.Call3({
+      target: mc,
+      allowFailure: false,
+      callData: abi.encodeCall(IMulticall3View.getChainId, ())
+    });
+    calls[1] = IMulticall3View.Call3({
+      target: mc,
+      allowFailure: false,
+      callData: abi.encodeCall(IMulticall3View.getBlockNumber, ())
+    });
+    IMulticall3View.Result[] memory res = IMulticall3View(mc).aggregate3(calls);
+    require(res.length == 2 && res[0].success && res[1].success, 'final: Multicall3 aggregate3');
+    require(abi.decode(res[0].returnData, (uint256)) == block.chainid, 'final: Multicall3 chainId');
+    require(
+      abi.decode(res[1].returnData, (uint256)) == block.number,
+      'final: Multicall3 blockNumber'
+    );
   }
 
   function _requireImmutableAdmin(address proxy, address admin, string memory label) internal {
@@ -1071,6 +1444,7 @@ contract DeployLighterDevnet is LighterManifest, LighterMarketInput {
     _in.deployer = _requireAddress('.deployer');
     _in.safe = _requireDeployed('.safe.address');
     _in.keeper = _requireAddress('.bots.keeper');
+    _in.multicall3 = _requireDeployed('.multicall3');
     require(_requireAddress('.assets.WETH.address') == LIGHTER_WETH9, 'manifest: WETH address');
     require(_requireAddress('.assets.USDC.address') == LIGHTER_USDC, 'manifest: USDC address');
 
@@ -1400,14 +1774,14 @@ contract DeployLighterDevnet is LighterManifest, LighterMarketInput {
     _writeContract('capsEngine', engine.CAPS_ENGINE(), 'CapsEngine');
   }
 
-  /// @dev Reserve token contracts and markets.core, read from the chain.
+  /// @dev Reserve token contracts and markets.core (risk/flag/rate values from committed input).
   function _writeReserves() internal {
     _writeReserveTokens(LIGHTER_WETH9, 'WETH');
     _writeReserveTokens(LIGHTER_USDC, 'USDC');
     LighterReserveParams[] memory params = _lighterReserveParams();
     string[2] memory entries;
-    entries[_in.wethMarketIndex] = _marketJson(_in.wethMarketIndex, params[0], _in.ethSource);
-    entries[_in.usdcMarketIndex] = _marketJson(_in.usdcMarketIndex, params[1], _in.usdcSource);
+    entries[_in.wethMarketIndex] = _marketJson(params[0], _in.ethSource, _in.wethSeed);
+    entries[_in.usdcMarketIndex] = _marketJson(params[1], _in.usdcSource, _in.usdcSeed);
     _write('.markets.core', string.concat('[', entries[0], ',', entries[1], ']'));
   }
 
@@ -1431,11 +1805,13 @@ contract DeployLighterDevnet is LighterManifest, LighterMarketInput {
     );
   }
 
-  /// @dev One markets.core entry: every value read back from the chain (not the input constants).
+  /// @dev One markets.core entry (F6): token addresses from the deployed Pool; every risk, cap,
+  /// flag, rate and seed value from the committed input (LighterMarketInput + manifest seedAmount),
+  /// never from chain reads.
   function _marketJson(
-    uint256 index,
     LighterReserveParams memory p,
-    address source
+    address source,
+    uint256 seed
   ) internal view returns (string memory) {
     DataTypes.ReserveDataLegacy memory rd = IPoolView(_m.pool).getReserveData(p.asset);
     require(
@@ -1454,56 +1830,37 @@ contract DeployLighterDevnet is LighterManifest, LighterMarketInput {
       ',"priceSource":',
       _jAddress(source)
     );
-    return string.concat(head, _marketRiskJson(index, p.asset), _marketParamsJson(p.asset), '}');
-  }
-
-  function _marketRiskJson(uint256 index, address asset) internal view returns (string memory) {
-    ReserveConfig memory c = _reserveConfig(asset);
-    (uint256 borrowCap, uint256 supplyCap) = IDataProviderView(_m.dataProvider).getReserveCaps(
-      asset
+    string memory risk = string.concat(
+      ',"ltvBps":',
+      _jUint(p.ltv),
+      ',"liquidationThresholdBps":',
+      _jUint(p.liqThreshold),
+      ',"liquidationBonusBps":',
+      _jUint(p.liqBonus),
+      ',"liquidationProtocolFeeBps":',
+      _jUint(p.liqProtocolFee),
+      ',"reserveFactorBps":',
+      _jUint(p.reserveFactor),
+      ',"debtCeiling":0,"supplyCap":',
+      _jUint(p.supplyCap),
+      ',"borrowCap":',
+      _jUint(p.borrowCap)
     );
-    return
-      string.concat(
-        ',"ltvBps":',
-        _jUint(c.ltv),
-        ',"liquidationThresholdBps":',
-        _jUint(c.lt),
-        ',"liquidationBonusBps":',
-        _jUint(c.lb - 100_00),
-        ',"reserveFactorBps":',
-        _jUint(c.rf),
-        ',"supplyCap":',
-        _jUint(supplyCap),
-        ',"borrowCap":',
-        _jUint(borrowCap),
-        ',"seedAmount":',
-        _jUintString(_uint(_market(index, 'seedAmount')))
-      );
-  }
-
-  function _marketParamsJson(address asset) internal view returns (string memory) {
-    IDataProviderView dp = IDataProviderView(_m.dataProvider);
-    IDefaultInterestRateStrategyV2.InterestRateData memory rate = IDefaultInterestRateStrategyV2(
-      _m.rateStrategy
-    ).getInterestRateDataBps(asset);
-    return
-      string.concat(
-        ',"params":{"liquidationProtocolFeeBps":',
-        _jUint(dp.getLiquidationProtocolFee(asset)),
-        ',"flashloanable":',
-        _jBool(dp.getFlashLoanEnabled(asset)),
-        ',"optimalUsageRatioBps":',
-        _jUint(rate.optimalUsageRatio),
-        ',"baseVariableBorrowRateBps":',
-        _jUint(rate.baseVariableBorrowRate),
-        ',"variableRateSlope1Bps":',
-        _jUint(rate.variableRateSlope1),
-        ',"variableRateSlope2Bps":',
-        _jUint(rate.variableRateSlope2),
-        ',"seedHolder":',
-        _jAddress(DEAD),
-        '}'
-      );
+    string memory flagsAndRates = string.concat(
+      ',"active":true,"frozen":false,"paused":false,"borrowingEnabled":true,"flashLoanEnabled":false',
+      ',"optimalUsageRatioBps":',
+      _jUint(p.rates.optimalUsageRatio),
+      ',"baseVariableBorrowRateBps":',
+      _jUint(p.rates.baseVariableBorrowRate),
+      ',"variableRateSlope1Bps":',
+      _jUint(p.rates.variableRateSlope1),
+      ',"variableRateSlope2Bps":',
+      _jUint(p.rates.variableRateSlope2),
+      ',"seedAmount":',
+      _jUintString(seed),
+      '}'
+    );
+    return string.concat(head, risk, flagsAndRates);
   }
 
   function _coreRolesJson() internal view returns (string memory) {
@@ -1513,27 +1870,28 @@ contract DeployLighterDevnet is LighterManifest, LighterMarketInput {
     address[] memory two = new address[](2);
     address[] memory none = new address[](0);
     one[0] = exec;
-    string memory defaultAdmin = _jAddressArray(one);
+    string memory execOnly = _jAddressArray(one);
     two[0] = safe;
     two[1] = exec;
     string memory safeAndExec = _jAddressArray(two);
     one[0] = safe;
     string memory safeOnly = _jAddressArray(one);
+    string memory empty = _jAddressArray(none);
     string memory acl = string.concat(
       '{"DEFAULT_ADMIN":',
-      defaultAdmin,
+      execOnly,
       ',"POOL_ADMIN":',
-      safeAndExec,
+      execOnly,
       ',"EMERGENCY_ADMIN":',
       safeOnly,
       ',"RISK_ADMIN":',
       safeAndExec,
       ',"FLASH_BORROWER":',
-      _jAddressArray(none),
+      empty,
       ',"BRIDGE":',
-      _jAddressArray(none),
+      empty,
       ',"ASSET_LISTING_ADMIN":',
-      safeOnly,
+      empty,
       '}'
     );
     return
