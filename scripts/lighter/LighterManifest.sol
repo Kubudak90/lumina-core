@@ -88,6 +88,10 @@ abstract contract LighterManifest is Script {
     return vm.parseJsonUint(_json, key);
   }
 
+  function _bool(string memory key) internal view returns (bool) {
+    return vm.parseJsonBool(_json, key);
+  }
+
   function _isNull(string memory key) internal view returns (bool) {
     bytes memory raw = vm.parseJson(_json, key);
     return raw.length == 32 && bytes32(raw) == bytes32(0);
