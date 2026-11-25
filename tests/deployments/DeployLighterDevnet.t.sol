@@ -176,6 +176,10 @@ contract DeployLighterDevnetHarness is DeployLighterDevnet {
     _assertFinalState();
   }
 
+  function exposed_readInputs() external {
+    _readInputs();
+  }
+
   function exposed_coreRolesJson() external view returns (string memory) {
     return _coreRolesJson();
   }
@@ -721,5 +725,85 @@ contract DeployLighterDevnetTest is Test, LighterMarketInput {
     assertEq(vm.parseJsonUint(wethJson, '.variableRateSlope1Bps'), 300);
     assertEq(vm.parseJsonUint(wethJson, '.variableRateSlope2Bps'), 8000);
     assertEq(vm.parseJsonUint(wethJson, '.seedAmount'), WETH_SEED);
+  }
+
+  // ------------------------------------------------------------------------------- AF5a-fix (b1)
+
+  function _inputsJson(string memory coreMarketsJson) internal view returns (string memory) {
+    string memory head = string.concat(
+      '{"deployer":"',
+      vm.toString(deployer),
+      '","safe":{"address":"',
+      vm.toString(safe),
+      '"},"bots":{"keeper":"',
+      vm.toString(keeper),
+      '"},"multicall3":"',
+      vm.toString(MULTICALL3),
+      '","assets":{"WETH":{"address":"',
+      vm.toString(LIGHTER_WETH9),
+      '"},"USDC":{"address":"',
+      vm.toString(LIGHTER_USDC),
+      '"}}'
+    );
+    string memory tail = string.concat(
+      ',"contracts":{"ethPriceSource":{"address":"',
+      vm.toString(ethSource),
+      '"},"usdcPriceSource":{"address":"',
+      vm.toString(usdcSource),
+      '"}},"oracle":{"coreSources":[{"address":"',
+      vm.toString(ethSource),
+      '","asset":"',
+      vm.toString(LIGHTER_WETH9),
+      '","marketId":0}],"fixedSources":[{"address":"',
+      vm.toString(usdcSource),
+      '","asset":"',
+      vm.toString(LIGHTER_USDC),
+      '"}]},"markets":{"core":',
+      coreMarketsJson,
+      '}}'
+    );
+    return string.concat(head, tail);
+  }
+
+  function test_b1_readInputsRequiresExactlyTwoCoreMarkets() public {
+    string memory wethEntry = string.concat(
+      '{"symbol":"WETH","asset":"',
+      vm.toString(LIGHTER_WETH9),
+      '","seedAmount":"',
+      vm.toString(WETH_SEED),
+      '"}'
+    );
+    string memory usdcEntry = string.concat(
+      '{"symbol":"USDC","asset":"',
+      vm.toString(LIGHTER_USDC),
+      '","seedAmount":"',
+      vm.toString(USDC_SEED),
+      '"}'
+    );
+    string memory thirdEntry = string.concat(
+      '{"symbol":"EXTRA","asset":"',
+      vm.toString(makeAddr('extraAsset')),
+      '","seedAmount":"1"}'
+    );
+
+    // Exactly two entries (WETH and USDC) passes.
+    harness.setManifestJson(_inputsJson(string.concat('[', wethEntry, ',', usdcEntry, ']')));
+    harness.exposed_readInputs();
+
+    // A third entry (with fields or empty object) is refused before anything is written.
+    harness.setManifestJson(
+      _inputsJson(string.concat('[', wethEntry, ',', usdcEntry, ',', thirdEntry, ']'))
+    );
+    vm.expectRevert(bytes('manifest: markets.core must have exactly two entries'));
+    harness.exposed_readInputs();
+
+    harness.setManifestJson(_inputsJson(string.concat('[', wethEntry, ',', usdcEntry, ',{}]')));
+    vm.expectRevert(bytes('manifest: markets.core must have exactly two entries'));
+    harness.exposed_readInputs();
+
+    // Fewer than two entries is also refused.
+    harness.setManifestJson(_inputsJson(string.concat('[', wethEntry, ']')));
+    vm.expectRevert(bytes('manifest: markets.core must have exactly two entries'));
+    harness.exposed_readInputs();
   }
 }

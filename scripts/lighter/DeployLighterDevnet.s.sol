@@ -1478,9 +1478,17 @@ contract DeployLighterDevnet is LighterManifest, LighterMarketInput {
       'manifest: oracle.fixedSources[0] must be the USDC fixed source'
     );
 
+    require(
+      !vm.keyExistsJson(_json, '.markets.core[2]'),
+      'manifest: markets.core must have exactly two entries'
+    );
     bool weth;
     bool usdc;
     for (uint256 i = 0; i < 2; i++) {
+      require(
+        vm.keyExistsJson(_json, _market(i, 'asset')),
+        'manifest: markets.core must have exactly two entries'
+      );
       address asset = _requireAddress(_market(i, 'asset'));
       if (asset == LIGHTER_WETH9 && !weth) {
         _in.wethMarketIndex = i;
